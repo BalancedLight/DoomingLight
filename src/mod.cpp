@@ -11,6 +11,7 @@
 #include "doom_wad.h"
 #include "doom_world_display.h"
 #include "doom_world_runtime.h"
+#include "doom_vehicle_feedback.h"
 #include "wad_discovery.h"
 #include <algorithm>
 #include <array>
@@ -110,12 +111,14 @@ struct Runtime {
     std::array<uint8_t, 320 * 32 * 4> statusPixels{};
     std::array<uint8_t, 320 * 16 * 4> messagePixels{};
     DoomPickupFeedback pickupFeedback{};
+    DoomVehicleFeedback vehicleFeedback{};
     bool pickupSoundQueued = false;
     uint64_t sawStartupUntil = 0;
     uint64_t updateToken = 0, configToken = 0, musicToken = 0;
     uint64_t lastTick = 0, retryMusicAt = 0;
     uint64_t musicEpoch = 0;
     uint64_t motionSampleAt = 0;
+    unsigned lastDamageSequence = 0;
     float motionX = 0.0f, motionZ = 0.0f, lastMotionSpeed = 0.0f;
 #if defined(DOOM_MODE_LAB)
     uint64_t nextPositionLog = 0;
@@ -133,6 +136,9 @@ struct Runtime {
     unsigned splashLogCount = 0;
     uint64_t lastTraversal = UINT64_MAX;
     unsigned traversalLogCount = 0;
+    unsigned damageFeedbackLogs = 0;
+    int lastBodySuppression = -2;
+    unsigned bodyFeedbackLogs = 0;
     std::array<unsigned, DOOM_WORLD_MAX_PROJECTILES> tracedAge{};
     std::array<int, DOOM_WORLD_MAX_PROJECTILES> tracedState{};
 #endif
@@ -389,13 +395,15 @@ struct Runtime {
             pendingMusic = {};
         }
     }
-    void sound(const char* name, float gain = 1.0f) {
+    bool sound(const char* name, float gain = 1.0f) {
         DoomSound effect{};
         if (audio && assets.wad && doom_wad_sound(assets.wad.get(), name, &effect)) {
-            (void)doom_audio_play_pcm(audio, effect.samples, effect.count, effect.rate,
-                settings.effectsVolume / 100.f * std::clamp(gain,0.0f,1.0f));
+            const bool played=doom_audio_play_pcm(audio, effect.samples, effect.count, effect.rate,
+                settings.effectsVolume / 100.f * std::clamp(gain,0.0f,1.0f))!=0;
             doom_sound_free(&effect);
+            return played;
         }
+        return false;
     }
     void weaponSound(unsigned soundId, const char* name) {
         if (soundId == DOOM_SOUND_SAWIDL && now() < sawStartupUntil) return;
@@ -552,7 +560,20 @@ struct Runtime {
             (void)result;
 #endif
         }
-        else if (event->type == DOOM_EVENT_CHEAT) doom_engine_reset_damage(self.engine);
+        else if (event->type == DOOM_EVENT_CHEAT) {
+            doom_engine_reset_damage(self.engine);
+            const char *message=nullptr;
+            switch (event->value) {
+            case DOOM_CHEAT_GOD:
+                message=self.player.god ? "Degreelessness Mode On" : "Degreelessness Mode Off";
+                break;
+            case DOOM_CHEAT_AMMO: message="Ammo (no keys) Added"; break;
+            case DOOM_CHEAT_AMMO_KEYS: message="Very Happy Ammo Added"; break;
+            case DOOM_CHEAT_CHOPPERS: message="... doesn't suck - GM"; break;
+            default: break;
+            }
+            if (message) (void)doom_messages_post(&self.pickupFeedback.messages,message,DOOM_MESSAGE_IMPORTANT,4000);
+        }
         else if (event->type == DOOM_EVENT_SOUND) {
             static const char* const names[] = {"DSPISTOL", "DSSHOTGN", "DSSGCOCK", "DSDSHTGN",
                 "DSDBOPN", "DSDBLOAD", "DSDBCLS", "DSSAWUP", "DSSAWIDL", "DSSAWFUL",
@@ -568,8 +589,9 @@ struct Runtime {
             char name[9]{}; DoomLump lump{};
             if (doom_music_lump_name(self.player.doom2, static_cast<unsigned>(event->value), name) &&
                 doom_wad_lump(self.assets.wad.get(), name, &lump)) {
+                (void)doom_messages_post(&self.pickupFeedback.messages,"Music Change",DOOM_MESSAGE_IMPORTANT,4000);
                 self.requestMusic(static_cast<unsigned>(event->value), true);
-            }
+            } else (void)doom_messages_post(&self.pickupFeedback.messages,"IMPOSSIBLE SELECTION",DOOM_MESSAGE_IMPORTANT,4000);
         }
     }
 #if defined(DOOM_MODE_LAB)
@@ -599,8 +621,10 @@ struct Runtime {
     }
     void deactivate() {
         active = false;
+        lastDamageSequence=0;
         resetMotion();
         doom_pickup_feedback_reset(&pickupFeedback);
+        doom_vehicle_feedback_reset(&vehicleFeedback);
         pickupSoundQueued = false;
         sawStartupUntil = 0;
 #if defined(DOOM_MODE_LAB)
@@ -623,6 +647,7 @@ struct Runtime {
             worldTraceCount=0; tracedAge.fill(0); tracedState.fill(DOOM_PROJECTILE_FREE);
             lastSplashSequence=0; splashLogCount=0;
             lastTraversal=UINT64_MAX; traversalLogCount=0;
+            lastDamageSequence=0; damageFeedbackLogs=0; lastBodySuppression=-2; bodyFeedbackLogs=0;
 #endif
             musicOverride = false;
             beginAssets();
@@ -637,6 +662,10 @@ struct Runtime {
             doom_world_runtime_reset(&world, generation);
 #endif
             doom_engine_reset_damage(engine);
+            DoomSound pain{};
+            const bool painReady=audio && doom_wad_sound(assets.wad.get(),"DSPLPAIN",&pain);
+            doom_sound_free(&pain);
+            doom_engine_set_voice_replacement(engine,painReady);
             if (!doom_engine_activate(engine, generation)) {
                 if (!bindingWarning) {
                     log("WARN", "Dooming Light is unavailable for this Player build.");
@@ -662,6 +691,19 @@ struct Runtime {
             log("INFO", message);
         }
         previousFire = frame.fire; previousPaused = frame.paused;
+        if (frame.damage_sequence && frame.damage_sequence!=lastDamageSequence && damageFeedbackLogs++<64) {
+            char message[192]{};
+            std::snprintf(message,sizeof(message),
+                "Doom lab incoming: sequence=%u damage=%d side=%d face=%d health=%d armor=%d",
+                frame.damage_sequence,frame.damage_amount,frame.damage_side,player.face_index,player.health,player.armor);
+            log("INFO",message);
+        }
+        if (frame.body_suppression!=lastBodySuppression && bodyFeedbackLogs++<32) {
+            char message[96]{};
+            std::snprintf(message,sizeof(message),"Doom lab body suppression: %d",frame.body_suppression);
+            log("INFO",message);
+        }
+        lastBodySuppression=frame.body_suppression;
         const uint64_t traversal=static_cast<uint64_t>(frame.move_state) |
             (static_cast<uint64_t>(frame.edge_state)<<16) |
             (static_cast<uint64_t>(frame.edge_active!=0)<<48) |
@@ -685,11 +727,16 @@ struct Runtime {
             nextPositionLog = now() + 500;
         }
 #endif
+        if (!frame.paused && frame.damage_sequence && frame.damage_sequence!=lastDamageSequence && player.health>0) {
+            if (!sound("DSPLPAIN")) doom_engine_set_voice_replacement(engine,0);
+        }
+        lastDamageSequence=frame.damage_sequence;
         if (frame.paused) { stopWeaponSound(); resetMotion(); lastTick = 0; return; }
         if (frame.respawn) {
             stopWeaponSound();
             resetMotion();
             doom_pickup_feedback_reset(&pickupFeedback);
+            doom_vehicle_feedback_reset(&vehicleFeedback);
             doom_reset(&player, player.doom2);
 #if defined(DOOM_MODE_LAB)
             doom_world_runtime_reset(&world, generation);
@@ -793,10 +840,21 @@ struct Runtime {
         if (pickupSoundQueued) sound("DSITEMUP");
         if (player.weapon != DOOM_CHAINSAW || player.switch_phase == 1 || player.health <= 0)
             stopWeaponSound();
+        auto vehicleRequest=record<DlumaNoRequest>();
+        auto vehicle=resultRecord<DlumaVehicleStateResult>();
+        char vehicleType[64]{}, vehicleClass[128]{};
+        vehicle.vehicle_type.data=vehicleType; vehicle.vehicle_type.capacity=sizeof(vehicleType);
+        vehicle.class_name.data=vehicleClass; vehicle.class_name.capacity=sizeof(vehicleClass);
+        const DlumaStatus vehicleStatus=playerApi.vehicle_state
+            ? playerApi.vehicle_state(playerApi.context,&vehicleRequest,&vehicle) : DLUMA_STATUS_UNAVAILABLE;
+        doom_vehicle_feedback_advance(&vehicleFeedback,frameElapsed,vehicleStatus==DLUMA_STATUS_OK,
+            vehicle.player_present,vehicle.vehicle_present,vehicleType,vehicle.speed_mps);
+        DoomPlayer renderPlayer{};
+        doom_vehicle_feedback_present(&vehicleFeedback,&player,&renderPlayer);
         float weaponX=0, weaponY=0;
         doom_hud_motion_update(assets.hud.get(),&player,frameElapsed,speed,
             frame.parkour==2 ? 200.0f : frame.parkour==1 ? 12.0f : 0.0f,&weaponX,&weaponY);
-        if (doom_hud_render_layers(assets.hud.get(), &player,
+        if (doom_hud_render_layers(assets.hud.get(), &renderPlayer,
                 weaponPixels.data(), weaponPixels.size(), statusPixels.data(), statusPixels.size(),
                 messagePixels.data(), messagePixels.size(), doom_pickup_feedback_text(&pickupFeedback)))
             (void)doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),

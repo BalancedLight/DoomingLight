@@ -522,7 +522,7 @@ void doom_cheat_char(DoomPlayer *p, char ch, DoomEventFn emit, void *ctx)
         p->god = !p->god;
         if (p->god)
             p->health = 100;
-        code = 1;
+        code = DOOM_CHEAT_GOD;
     }
     else if (ends(p, "IDFA") || ends(p, "IDKFA"))
     {
@@ -537,13 +537,13 @@ void doom_cheat_char(DoomPlayer *p, char ch, DoomEventFn emit, void *ctx)
         p->owned_mask = (1u << DOOM_WEAPON_COUNT) - 1;
         if (!p->doom2)
             p->owned_mask &= ~(1u << DOOM_SUPER_SHOTGUN);
-        code = 2;
+        code = ends(p, "IDKFA") ? DOOM_CHEAT_AMMO_KEYS : DOOM_CHEAT_AMMO;
     }
     else if (ends(p, "IDCHOPPERS"))
     {
         p->owned_mask |= 1u << DOOM_CHAINSAW;
         p->invulnerability_tics = 1;
-        code = 3;
+        code = DOOM_CHEAT_CHOPPERS;
     }
     else if (music_digit_pending && isdigit((unsigned char)ch))
     {

@@ -32,6 +32,29 @@ int doom_movement_make_profile(double base_units_per_mps,
                                DoomMovementProfile *profile,
                                DoomMovementTheory *theory);
 
+/* Two measurements for one native base variable under the same map, player,
+ * action and modifier conditions. Speeds must be measured from position over
+ * time after reaching steady motion; bounds come from variable_get. */
+typedef struct DoomMovementCalibrationPoint {
+    double base, speed_mps;
+} DoomMovementCalibrationPoint;
+typedef struct DoomMovementCalibrationCurve {
+    DoomMovementCalibrationPoint lower, upper;
+    double minimum_base, maximum_base;
+} DoomMovementCalibrationCurve;
+typedef struct DoomMovementCalibration {
+    DoomMovementCalibrationCurve backward_max, backward_min;
+    DoomMovementCalibrationCurve forward_max, forward_min;
+    DoomMovementCalibrationCurve strafe_max, strafe_min;
+    DoomMovementCalibrationCurve sprint;
+} DoomMovementCalibration;
+/* Interpolate independently for each native variable. Targets must be within
+ * the measured speed intervals and API base bounds; no extrapolation or
+ * game mutation. Returns 0 without changing outputs when data is invalid. */
+int doom_movement_make_calibrated_profile(const DoomMovementCalibration *calibration,
+                                          DoomMovementProfile *profile,
+                                          DoomMovementTheory *theory);
+
 typedef struct DoomMovement {
     DlumaPlayerV1 player;
     DlumaObjectHandle handle;

@@ -123,6 +123,54 @@ extern "C" int doom_movement_make_profile(double base_units_per_mps,
     return 1;
 }
 
+namespace {
+bool calibrated_base(const DoomMovementCalibrationCurve &curve, double target, double &out)
+{
+    const auto &lo = curve.lower;
+    const auto &hi = curve.upper;
+    if (!std::isfinite(lo.base) || !std::isfinite(hi.base) ||
+        !std::isfinite(lo.speed_mps) || !std::isfinite(hi.speed_mps) ||
+        !std::isfinite(curve.minimum_base) || !std::isfinite(curve.maximum_base) ||
+        !std::isfinite(target) || curve.minimum_base > curve.maximum_base ||
+        lo.base < curve.minimum_base || hi.base > curve.maximum_base ||
+        hi.base <= lo.base || lo.speed_mps < 0.0 ||
+        hi.speed_mps - lo.speed_mps < 1e-6 ||
+        target < lo.speed_mps || target > hi.speed_mps)
+        return false;
+    const double fraction = (target - lo.speed_mps) / (hi.speed_mps - lo.speed_mps);
+    const double candidate = lo.base + fraction * (hi.base - lo.base);
+    if (!std::isfinite(candidate) || candidate < curve.minimum_base ||
+        candidate > curve.maximum_base)
+        return false;
+    out = candidate;
+    return true;
+}
+}
+
+extern "C" int doom_movement_make_calibrated_profile(
+    const DoomMovementCalibration *calibration, DoomMovementProfile *profile,
+    DoomMovementTheory *theory)
+{
+    if (!calibration || !profile) return 0;
+    DoomMovementProfile unused{}, candidate{};
+    DoomMovementTheory result{};
+    if (!doom_movement_make_profile(1.0, &unused, &result) ||
+        !calibrated_base(calibration->forward_min, result.walk_forward_mps, candidate.forward_min) ||
+        !calibrated_base(calibration->forward_max, result.run_forward_mps, candidate.forward_max) ||
+        !calibrated_base(calibration->backward_min, result.walk_forward_mps, candidate.backward_min) ||
+        !calibrated_base(calibration->backward_max, result.run_forward_mps, candidate.backward_max) ||
+        !calibrated_base(calibration->strafe_min, result.walk_strafe_mps, candidate.strafe_min) ||
+        !calibrated_base(calibration->strafe_max, result.run_strafe_mps, candidate.strafe_max) ||
+        !calibrated_base(calibration->sprint, result.run_forward_mps, candidate.sprint) ||
+        candidate.forward_min > candidate.forward_max ||
+        candidate.backward_min > candidate.backward_max ||
+        candidate.strafe_min > candidate.strafe_max)
+        return 0;
+    *profile = candidate;
+    if (theory) *theory = result;
+    return 1;
+}
+
 extern "C" int doom_movement_init(DoomMovement *movement, const DlumaPlayerV1 *player)
 {
     if (!movement || !player || player->struct_size < sizeof(*player) || player->version != 1 ||

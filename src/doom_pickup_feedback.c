@@ -16,11 +16,12 @@ void doom_pickup_feedback_begin_frame(DoomPickupFeedback *feedback, unsigned ela
     if (!feedback)
         return;
     feedback->recorded_this_frame = 0;
-    feedback->remaining_ms = elapsed_ms >= feedback->remaining_ms ? 0 : feedback->remaining_ms - elapsed_ms;
+    doom_messages_tick(&feedback->messages, elapsed_ms);
 }
 void doom_pickup_feedback_record(DoomPickupFeedback *feedback, DoomDrop kind, int amount)
 {
     static const char *const names[] = {"bullets", "shells", "rockets", "cells", "health", "armor"};
+    char text[64];
     if (!feedback || kind < DOOM_DROP_BULLETS || kind > DOOM_DROP_GREEN_ARMOR || amount <= 0)
         return;
     if (feedback->recorded_this_frame && feedback->kind == kind)
@@ -29,10 +30,10 @@ void doom_pickup_feedback_record(DoomPickupFeedback *feedback, DoomDrop kind, in
         feedback->amount = amount;
     feedback->kind = kind;
     feedback->recorded_this_frame = 1;
-    feedback->remaining_ms = PICKUP_MESSAGE_MS;
-    snprintf(feedback->text, sizeof(feedback->text), "Picked up %s +%d", names[(int)kind], feedback->amount);
+    snprintf(text, sizeof(text), "Picked up %s +%d", names[(int)kind], feedback->amount);
+    (void)doom_messages_post(&feedback->messages, text, DOOM_MESSAGE_NORMAL, PICKUP_MESSAGE_MS);
 }
 const char *doom_pickup_feedback_text(const DoomPickupFeedback *feedback)
 {
-    return feedback && feedback->remaining_ms ? feedback->text : 0;
+    return feedback ? doom_messages_text(&feedback->messages) : 0;
 }

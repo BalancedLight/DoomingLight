@@ -36,6 +36,13 @@ extern "C"
         DOOM_EVENT_DROPPED,
         DOOM_EVENT_SOUND
     } DoomEventType;
+    typedef enum DoomCheatId
+    {
+        DOOM_CHEAT_GOD = 1,
+        DOOM_CHEAT_AMMO = 2,
+        DOOM_CHEAT_CHOPPERS = 3,
+        DOOM_CHEAT_AMMO_KEYS = 4
+    } DoomCheatId;
     typedef enum DoomSoundId
     {
         DOOM_SOUND_PISTOL,

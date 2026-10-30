@@ -31,6 +31,8 @@ typedef struct DoomEngineFrame {
     int doom_dead, death_commit, parkour;
     unsigned move_state, edge_state;
     int edge_active, ladder_active;
+    unsigned damage_sequence;
+    int damage_side, damage_amount, body_suppression;
     int weapon_select;
     int weapon_slot;
     unsigned cheat_count;
@@ -61,6 +63,7 @@ void doom_engine_set_dynamic_lights(DoomEngine *engine, int enabled);
 int doom_engine_dynamic_lights(DoomEngine *engine);
 void doom_engine_set_fire_key(DoomEngine *engine, int virtual_key);
 void doom_engine_set_cheats_enabled(DoomEngine *engine, int enabled);
+void doom_engine_set_voice_replacement(DoomEngine *engine, int ready);
 int doom_engine_initialize(DoomEngine *engine);
 int doom_engine_activate(DoomEngine *engine, uint32_t map_generation);
 void doom_engine_deactivate(DoomEngine *engine);

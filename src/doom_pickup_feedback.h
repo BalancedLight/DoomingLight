@@ -1,14 +1,14 @@
 #ifndef DOOM_PICKUP_FEEDBACK_H
 #define DOOM_PICKUP_FEEDBACK_H
 #include "doom_core.h"
+#include "doom_messages.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct DoomPickupFeedback
 {
-    char text[64];
-    unsigned remaining_ms;
+    DoomMessages messages;
     DoomDrop kind;
     int amount, recorded_this_frame;
 } DoomPickupFeedback;

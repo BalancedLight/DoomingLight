@@ -1,0 +1,20 @@
+/build/
+/dist/
+__pycache__/
+*.py[cod]
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.wad
+*.WAD
+*.log
+*.dmp
+.vs/
+
+
+#Ignore vscode AI rules
+.github\instructions\codacy.instructions.md

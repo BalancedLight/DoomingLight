@@ -1,0 +1,9 @@
+Nuked OPL3 and Nuked-OPL3-fast
+Copyright (C) 2013-2020 Nuke.YKT
+Copyright (C) 2026 Tony Gies
+Licensed under LGPL-2.1-or-later; see LICENSE and source headers.
+
+Files obtained from chocolate-doom/chocolate-doom, opl/:
+opl3.c Git blob 9774d99262de40ae9f68502c9994f0ab121fa85a
+opl3.h Git blob fa4e803e1ac8812fb088860f581d8d979f4d0314
+wf_rom.h Git blob ebd420617a9a26878547e44d3f0df439546b63c8

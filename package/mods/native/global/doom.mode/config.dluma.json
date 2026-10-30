@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "categories": [
+    {
+      "id": "game", "name": "Game and WADs",
+      "settings": [
+        {"key": "game", "name": "Game", "description": "Choose the Doom arsenal and soundtrack. Applies on the next map.", "type": "enum", "default": "auto", "options": [{"value": "auto", "name": "Automatic"}, {"value": "doom", "name": "Doom"}, {"value": "doom2", "name": "Doom II"}]},
+        {"key": "doom_wad", "name": "Doom WAD", "description": "Path to DOOM.WAD. Leave empty to search your Steam libraries. Applies on the next map.", "type": "text", "default": "", "maxLength": 1024},
+        {"key": "doom2_wad", "name": "Doom II WAD", "description": "Path to DOOM2.WAD. Leave empty to search your Steam libraries. Applies on the next map.", "type": "text", "default": "", "maxLength": 1024}
+      ]
+    },
+    {
+      "id": "gameplay", "name": "Gameplay",
+      "settings": [
+        {"key": "movement", "name": "Movement", "description": "Traversal keeps jumping, climbing and free look. Classic uses horizontal aiming without jumping or climbing.", "type": "enum", "default": "traversal", "options": [{"value": "traversal", "name": "Traversal"}, {"value": "classic", "name": "Classic"}]},
+        {"key": "fire_key", "name": "Extra fire key", "description": "Hold this key to fire. Left mouse also fires.", "type": "keybind", "default": 162},
+        {"key": "hud_scale", "name": "HUD scale (%)", "description": "Size of the Doom status bar and weapon sprites.", "type": "integer", "default": 100, "min": 50, "max": 200, "step": 10},
+        {"key": "incoming_damage", "name": "Incoming damage (%)", "description": "Damage taken before Doom armor absorbs its share.", "type": "integer", "default": 100, "min": 10, "max": 500, "step": 10},
+        {"key": "outgoing_damage", "name": "Weapon damage (%)", "description": "Damage dealt by Doom weapons.", "type": "integer", "default": 100, "min": 10, "max": 500, "step": 10},
+        {"key": "cheats", "name": "Cheat commands", "description": "Type IDDQD, IDFA, IDKFA, IDCHOPPERS or IDMUS followed by two digits during gameplay.", "type": "boolean", "default": true}
+      ]
+    },
+    {
+      "id": "audio", "name": "Music and sound",
+      "settings": [
+        {"key": "music", "name": "Music", "description": "Doom music and Off stop Dying Light's music manager while the mode is active.", "type": "enum", "default": "doom", "options": [{"value": "doom", "name": "Doom music"}, {"value": "host", "name": "Dying Light music"}, {"value": "off", "name": "Off"}]},
+        {"key": "default_track", "name": "Default track (IDMUS number)", "description": "Applies on the next map. Use 0 for E1M1 in Doom or MAP01 in Doom II.", "type": "integer", "default": 0, "min": 0, "max": 49, "step": 1},
+        {"key": "music_volume", "name": "Music volume (%)", "description": "Volume of the Doom soundtrack.", "type": "integer", "default": 70, "min": 0, "max": 100, "step": 5},
+        {"key": "effects_volume", "name": "Sound volume (%)", "description": "Volume of Doom weapons, pickups and the failed-interaction sound.", "type": "integer", "default": 100, "min": 0, "max": 100, "step": 5}
+      ]
+    }
+  ]
+}

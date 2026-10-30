@@ -1,5 +1,6 @@
 #include "doom_world_display.h"
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -7,30 +8,50 @@
 
 namespace {
 constexpr unsigned MaxSprites = DOOM_WORLD_MAX_PROJECTILES + DOOM_WORLD_MAX_PICKUPS;
-constexpr unsigned MaxImages = 32, MaxNativeSprites = 64;
+constexpr unsigned MaxImages = 40, MaxNativeSprites = 64;
 struct Image {
     char name[9]{};
     uint8_t *pixels = nullptr;
     unsigned edge = 0, height = 0;
+    bool mirror = false;
 };
 struct Sprite {
     uint32_t token = 0;
     unsigned age = 0, edge = 0;
+    bool mirror = false;
     char name[9]{};
 };
 struct Wanted {
     const char *name = nullptr;
     DoomVec3 position{};
     unsigned age = 0, edge = 0;
-    bool pickup = false;
+    bool pickup = false, mirror = false;
 };
 unsigned u16(const uint8_t *p) { return unsigned(p[0]) | (unsigned(p[1]) << 8); }
-Wanted desired(const DoomWorld *world, unsigned index) {
+Wanted desired(const DoomWorld *world, unsigned index, const DoomVec3 *viewer) {
     Wanted w{};
     if (index < DOOM_WORLD_MAX_PROJECTILES) {
         const DoomProjectile &p = world->projectiles[index];
         w.name = doom_world_projectile_sprite(&p); w.position = p.position; w.age = p.age;
         w.edge = p.weapon == DOOM_BFG ? 256u : p.weapon == DOOM_ROCKET ? 128u : 64u;
+        if (w.name && p.state == DOOM_PROJECTILE_FLYING && p.weapon == DOOM_ROCKET) {
+            static const char *const rotation_names[8] = {
+                "MISLA1", "MISLA8A2", "MISLA7A3", "MISLA6A4",
+                "MISLA5", "MISLA6A4", "MISLA7A3", "MISLA8A2"
+            };
+            unsigned rotation = 4;
+            if (viewer) {
+                constexpr float Pi = 3.14159265358979323846f;
+                float angle = std::atan2(p.position.y - viewer->y, p.position.x - viewer->x) -
+                              std::atan2(p.direction.y, p.direction.x) + 9.0f * Pi / 8.0f;
+                while (angle < 0.0f) angle += 2.0f * Pi;
+                while (angle >= 2.0f * Pi) angle -= 2.0f * Pi;
+                rotation = static_cast<unsigned>(angle * (4.0f / Pi));
+                if (rotation > 7) rotation = 7;
+            }
+            w.name = rotation_names[rotation];
+            w.mirror = rotation >= 1 && rotation <= 3;
+        }
     } else {
         const DoomPickup &p = world->pickups[index - DOOM_WORLD_MAX_PROJECTILES];
         if (p.active) w.name = doom_world_pickup_sprite(p.kind);
@@ -51,7 +72,7 @@ extern "C" DoomWorldDisplay *doom_world_display_create(void) {
 }
 static const Image *picture(DoomWorldDisplay *d, const DoomWad *wad, const Wanted &w) {
     for (const Image &p : d->images)
-        if (p.pixels && p.edge == w.edge && std::strcmp(p.name, w.name) == 0) return &p;
+        if (p.pixels && p.edge == w.edge && p.mirror == w.mirror && std::strcmp(p.name, w.name) == 0) return &p;
     Image *slot = nullptr;
     for (Image &p : d->images) if (!p.pixels) { slot = &p; break; }
     if (!slot) return nullptr;
@@ -66,13 +87,17 @@ static const Image *picture(DoomWorldDisplay *d, const DoomWad *wad, const Wante
     if (pixels) {
         const unsigned left = (w.edge - decoded.width) / 2;
         const unsigned top = (w.edge - decoded.height) / 2;
-        for (unsigned y = 0; y < decoded.height; ++y)
-            std::memcpy(pixels + (static_cast<size_t>(top + y) * w.edge + left) * 4,
-                        decoded.rgba + static_cast<size_t>(y) * decoded.width * 4,
-                        static_cast<size_t>(decoded.width) * 4);
+        for (unsigned y = 0; y < decoded.height; ++y) {
+            uint8_t *out = pixels + (static_cast<size_t>(top + y) * w.edge + left) * 4;
+            const uint8_t *in = decoded.rgba + static_cast<size_t>(y) * decoded.width * 4;
+            if (!w.mirror) std::memcpy(out, in, static_cast<size_t>(decoded.width) * 4);
+            else for (unsigned x = 0; x < decoded.width; ++x)
+                std::memcpy(out + static_cast<size_t>(x) * 4,
+                            in + static_cast<size_t>(decoded.width - 1 - x) * 4, 4);
+        }
         const size_t name_size = std::strlen(w.name);
         if (name_size < sizeof(slot->name)) std::memcpy(slot->name, w.name, name_size + 1);
-        slot->pixels = pixels; slot->edge = w.edge; slot->height = decoded.height;
+        slot->pixels = pixels; slot->edge = w.edge; slot->height = decoded.height; slot->mirror = w.mirror;
     }
     doom_image_free(&decoded);
     return pixels ? slot : nullptr;
@@ -84,8 +109,15 @@ extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine
     if (d->open && d->generation != generation) {
         if (!doom_world_display_close(d, engine)) return 0;
     }
+    float camera_x = 0, camera_y = 0, camera_z = 0;
+    DoomVec3 viewer{};
+    const DoomVec3 *viewer_ptr = nullptr;
+    if (doom_engine_camera_position(engine, &camera_x, &camera_y, &camera_z)) {
+        viewer = {camera_x * 32.0f, camera_z * 32.0f, camera_y * 32.0f};
+        viewer_ptr = &viewer;
+    }
     bool any = false;
-    for (unsigned i = 0; i < MaxSprites; ++i) if (desired(world, i).name) { any = true; break; }
+    for (unsigned i = 0; i < MaxSprites; ++i) if (desired(world, i, viewer_ptr).name) { any = true; break; }
     if (!d->open) {
         if (!any) return 1;
         if (!doom_engine_world_sprites_open(engine)) return 0;
@@ -94,7 +126,7 @@ extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine
     unsigned native_count = 0;
     for (unsigned i = 0; i < MaxSprites; ++i) {
         Sprite &slot = d->sprites[i];
-        const Wanted w = desired(world, i);
+        const Wanted w = desired(world, i, viewer_ptr);
         if (slot.token && (!w.name || w.age < slot.age || slot.edge != w.edge)) {
             if (!doom_engine_world_sprite_remove(engine, slot.token)) { d->blocked = true; return 0; }
             slot = {};
@@ -104,9 +136,9 @@ extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine
     unsigned creates = 0, updates = 0;
     for (unsigned i = 0; i < MaxSprites; ++i) {
         Sprite &slot = d->sprites[i];
-        Wanted w = desired(world, i);
+        Wanted w = desired(world, i, viewer_ptr);
         if (!w.name) continue;
-        const bool change = !slot.token || std::strcmp(slot.name, w.name) != 0;
+        const bool change = !slot.token || slot.mirror != w.mirror || std::strcmp(slot.name, w.name) != 0;
         if (change && ((!slot.token && (creates >= 2 || native_count >= MaxNativeSprites)) ||
                        (slot.token && updates >= 4))) continue;
         const Image *p = change ? picture(d, wad, w) : nullptr;
@@ -127,6 +159,7 @@ extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine
         if (change) {
             const size_t name_size = std::strlen(w.name);
             if (name_size < sizeof(slot.name)) std::memcpy(slot.name, w.name, name_size + 1);
+            slot.mirror = w.mirror;
         }
         slot.age = w.age;
         /* Pickups do not move. Their initial placement includes half their

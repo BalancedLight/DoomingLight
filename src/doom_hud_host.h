@@ -11,6 +11,8 @@ DoomHudHost *doom_hud_host_create(void *level, void *image, uint32_t generation)
 /* Experimental screen registration; call only on the game thread after the
  * approved companion archive is mounted by the loader. */
 DoomHudHost *doom_hud_host_open(void *level, uint32_t generation);
+/* Cache the preferred sampling mode; it is applied during the next update. */
+void doom_hud_host_set_filtering(DoomHudHost *host, int bilinear);
 int doom_hud_host_update(DoomHudHost *host, void *level, void *image,
                          uint32_t generation, const uint8_t *rgba, float scale);
 int doom_hud_host_update_layers(DoomHudHost *host, void *level, uint32_t generation,

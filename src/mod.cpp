@@ -16,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -66,7 +67,7 @@ struct PreparedMusic {
 };
 struct Settings {
     std::string game = "auto", doom, doom2, music = "doom";
-    bool classic = false, cheats = true;
+    bool classic = false, cheats = true, hudFit = true, bilinear = false;
     int track = 0, hud = 100, weaponScale = 100, incoming = 100, outgoing = 100;
     int musicVolume = 70, effectsVolume = 100;
 };
@@ -107,6 +108,10 @@ struct Runtime {
     DoomWorldDisplay *worldDisplay = nullptr;
     unsigned worldWarnings = 0, hostWarnings = 0;
     bool worldDisplayWarned = false;
+    bool traceWorld = false;
+    unsigned worldTraceCount = 0;
+    std::array<unsigned, DOOM_WORLD_MAX_PROJECTILES> tracedAge{};
+    std::array<int, DOOM_WORLD_MAX_PROJECTILES> tracedState{};
 #endif
     uint32_t generation = 0;
     unsigned requestedTrack = 0, playingTrack = 0, resumeTrack = 0;
@@ -164,13 +169,16 @@ struct Runtime {
         settings.cheats = integer("cheats", 1, 0, 1) != 0;
         settings.track = integer("default_track", 0, 0, 49);
         settings.hud = integer("hud_scale", 100, 50, 200);
+        settings.hudFit = integer("hud_fit_screen", 1, 0, 1) != 0;
         settings.weaponScale = integer("weapon_scale", 100, 50, 200);
+        settings.bilinear = integer("bilinear_filtering", 0, 0, 1) != 0;
         settings.incoming = integer("incoming_damage", 100, 10, 500);
         settings.outgoing = integer("outgoing_damage", 100, 10, 500);
         settings.musicVolume = integer("music_volume", 70, 0, 100);
         settings.effectsVolume = integer("effects_volume", 100, 0, 100);
         doom_engine_configure(engine, settings.classic, settings.incoming / 100.f,
             settings.outgoing / 100.f);
+        doom_engine_set_texture_filtering(engine, settings.bilinear);
         doom_engine_set_fire_key(engine, integer("fire_key", 162, 1, 254));
         doom_audio_music_volume(audio, settings.musicVolume / 100.f);
         (void)doom_audio_weapon_volume(audio, settings.effectsVolume / 100.f);
@@ -352,6 +360,54 @@ struct Runtime {
         sawStartupUntil = 0;
     }
 #if defined(DOOM_MODE_LAB)
+    bool projectileBasis(DoomWorldFrame& frame) const {
+        DoomVec3 eye{}, forward{};
+        if (!frame.host || !frame.host->aim || !frame.host->sweep ||
+            !doom_engine_shot_basis(engine, &eye, &forward)) return false;
+        DoomTrace aim{}, clearance{};
+        if (!frame.host->aim(frame.host->context, eye, forward, 2048.0f, &aim)) return false;
+        DoomVec3 muzzle{frame.player_position.x, frame.player_position.y,
+                        frame.player_position.z + 32.0f};
+        if (!frame.host->sweep(frame.host->context, eye, muzzle, 0.0f, &clearance)) return false;
+        if (clearance.hit) {
+            // Keep the spawn on the camera side of an intervening wall.
+            DoomVec3 delta{clearance.point.x-eye.x, clearance.point.y-eye.y,
+                           clearance.point.z-eye.z};
+            const float length=std::sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+            const float fraction=length>1.0f ? (length-1.0f)/length : 0.0f;
+            muzzle={eye.x+delta.x*fraction,eye.y+delta.y*fraction,eye.z+delta.z*fraction};
+        }
+        DoomVec3 direction{aim.point.x-muzzle.x,aim.point.y-muzzle.y,aim.point.z-muzzle.z};
+        const float length=std::sqrt(direction.x*direction.x+direction.y*direction.y+
+                                     direction.z*direction.z);
+        if (!std::isfinite(length) || length<0.0001f) return false;
+        frame.shot_origin=muzzle;
+        frame.shot_direction={direction.x/length,direction.y/length,direction.z/length};
+        return true;
+    }
+    void logWorld() {
+        if (!traceWorld || worldTraceCount>=96) return;
+        for (unsigned i=0; i<DOOM_WORLD_MAX_PROJECTILES && worldTraceCount<96; ++i) {
+            const DoomProjectile& p=world.world.projectiles[i];
+            const int state=static_cast<int>(p.state);
+            const bool changed=state!=tracedState[i];
+            const unsigned age=p.state==DOOM_PROJECTILE_IMPACT ? p.impact_age : p.age;
+            if ((changed || (p.state!=DOOM_PROJECTILE_FREE && age>=tracedAge[i]+4u)) &&
+                (p.state!=DOOM_PROJECTILE_FREE || tracedState[i]!=DOOM_PROJECTILE_FREE)) {
+                char message[288]{};
+                std::snprintf(message,sizeof(message),
+                    "Doom lab projectile: slot=%u weapon=%d state=%d age=%u origin=%.2f,%.2f,%.2f position=%.2f,%.2f,%.2f direction=%.4f,%.4f,%.4f errors=%u",
+                    i,static_cast<int>(p.weapon),state,age,
+                    static_cast<double>(p.origin.x),static_cast<double>(p.origin.y),static_cast<double>(p.origin.z),
+                    static_cast<double>(p.position.x),static_cast<double>(p.position.y),static_cast<double>(p.position.z),
+                    static_cast<double>(p.direction.x),static_cast<double>(p.direction.y),static_cast<double>(p.direction.z),
+                    world.world.errors);
+                log("INFO",message); ++worldTraceCount; tracedAge[i]=age;
+            }
+            if (changed) tracedAge[i]=age;
+            tracedState[i]=state;
+        }
+    }
     void logDamage(const DoomDamageObservation& observation) const {
         char before[32] = "unavailable", after[32] = "unavailable", message[224]{};
         if (observation.before_valid)
@@ -457,6 +513,7 @@ struct Runtime {
             deactivate(); generation = mapGeneration; haveGeneration = true;
 #if defined(DOOM_MODE_LAB)
             attackLogCount.fill(0); damageLogCount.fill(0); inputLogCount = 0; previousFire = previousPaused = -1;
+            worldTraceCount=0; tracedAge.fill(0); tracedState.fill(DOOM_PROJECTILE_FREE);
 #endif
             musicOverride = false;
             beginAssets();
@@ -551,11 +608,13 @@ struct Runtime {
                 const unsigned count = doom_engine_death_drain(engine, deaths, 16);
                 for (unsigned i = 0; i < count && i < 16; ++i)
                     (void)doom_world_runtime_death(&world, &player, deaths[i].id, deaths[i].position);
-                if (doom_engine_shot_basis(engine, &worldFrame.shot_origin, &worldFrame.shot_direction))
+                if ((player.weapon==DOOM_ROCKET || player.weapon==DOOM_PLASMA ||
+                     player.weapon==DOOM_BFG) && projectileBasis(worldFrame))
                     worldFrame.projectile_supported = doom_engine_lab_projectile_ready(
                         engine, static_cast<DoomWeapon>(player.weapon));
             }
             doom_world_runtime_advance(&world, &player, elapsed, &worldFrame, onDoomEvent, onPickup, this);
+            logWorld();
             if (hostBound) doom_engine_world_unbind(engine);
             DoomDamageObservation observations[64]{};
             const unsigned observationCount=doom_engine_drain_damage_observations(engine, observations, 64);
@@ -599,7 +658,7 @@ struct Runtime {
                 weaponPixels.data(), weaponPixels.size(), statusPixels.data(), statusPixels.size(),
                 messagePixels.data(), messagePixels.size(), doom_pickup_feedback_text(&pickupFeedback)))
             (void)doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),
-                messagePixels.data(), settings.hud / 100.f, settings.weaponScale / 100.f);
+                messagePixels.data(), settings.hudFit ? 0.f : settings.hud / 100.f, settings.weaponScale / 100.f);
         musicTick();
     }
     DlumaStatus prepare(const DlumaApiV1* host) {
@@ -620,6 +679,8 @@ struct Runtime {
         const char *worldSprites = std::getenv("DOOMING_LIGHT_WORLD_SPRITES");
         if (worldSprites && std::strcmp(worldSprites, "1") == 0)
             worldDisplay = doom_world_display_create();
+        const char *worldTrace = std::getenv("DOOMING_LIGHT_WORLD_TRACE");
+        traceWorld=worldTrace && std::strcmp(worldTrace,"1")==0;
 #endif
         doom_engine_bind(engine, &player, onDoomEvent, this);
         (void)doom_engine_initialize(engine);

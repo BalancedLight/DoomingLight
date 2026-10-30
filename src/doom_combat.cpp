@@ -420,7 +420,7 @@ bool object_geometry(DoomCombat *c, void *target, Vec3 *center, float *radius) {
     return valid(*center) && std::isfinite(*radius) && *radius>=0 && *radius<=65536.0f;
 }
 int collect_nearby(DoomCombat *c, DoomVec3 origin, float radius,
-                   DoomTarget *out, unsigned capacity, unsigned *count) {
+                   DoomTarget *out, unsigned capacity, unsigned *count, bool include_props) {
     NativeVector matches{nullptr,0,0,31};
     int success=0;
     Vec3 center=engine_position(origin);
@@ -442,16 +442,21 @@ int collect_nearby(DoomCombat *c, DoomVec3 origin, float radius,
             if (!control) continue;
             void *actor=c->dynamic_cast_object(control,0,c->game+0x1C952F0,c->game+0x1CA9818,0);
             void *target=c->dynamic_cast_object(control,0,c->game+0x1C952F0,c->game+0x1C95390,0);
-            if (!actor || !target || target==c->world_player) continue;
+            if (!target || target==c->world_player || (!actor && !include_props)) continue;
             auto *gs=static_cast<unsigned char *>(target)+40;
             if (c->get_level(gs)!=c->world_level) continue;
             int id=c->get_id(gs);
             if (id<0 || c->get_object(c->world_level,id)!=gs) continue;
+            const uint64_t handle=(static_cast<uint64_t>(c->world_epoch)<<32) |
+                                  (static_cast<uint64_t>(static_cast<uint32_t>(id))+1u);
+            bool duplicate=false;
+            for (unsigned j=0;j<*count;++j)
+                if (out[j].handle==handle) { duplicate=true; break; }
+            if (duplicate) continue;
             Vec3 object_center{}; float object_radius=0;
             if (!object_geometry(c,target,&object_center,&object_radius)) continue;
             DoomTarget &item=out[*count];
-            item.handle=(static_cast<uint64_t>(c->world_epoch)<<32) |
-                        (static_cast<uint64_t>(static_cast<uint32_t>(id))+1u);
+            item.handle=handle;
             item.position=world_position(object_center); item.radius=object_radius;
             ++*count;
         }
@@ -481,7 +486,7 @@ int trace_actor(DoomCombat *c, Vec3 from, Vec3 to, ActorHit *out) {
         c->actor_cache_count=0; c->actor_cache_valid=false;
         if (!collect_nearby(c,world_position(c->actor_cache_center),
                 c->actor_cache_radius*DOOM_WORLD_UNITS_PER_METRE,c->actor_cache.data(),
-                static_cast<unsigned>(c->actor_cache.size()),&c->actor_cache_count)) return 0;
+                static_cast<unsigned>(c->actor_cache.size()),&c->actor_cache_count,false)) return 0;
         c->actor_cache_valid=true;
     }
     float best=2.0f; void *best_object=nullptr; int best_id=-1;
@@ -514,7 +519,7 @@ int trace_actor(DoomCombat *c, Vec3 from, Vec3 to, ActorHit *out) {
 }
 int world_nearby(void *ctx, DoomVec3 origin, float radius,
                  DoomTarget *out, unsigned capacity, unsigned *count) {
-    __try { return collect_nearby(static_cast<DoomCombat *>(ctx),origin,radius,out,capacity,count); }
+    __try { return collect_nearby(static_cast<DoomCombat *>(ctx),origin,radius,out,capacity,count,true); }
     __except(EXCEPTION_EXECUTE_HANDLER) { if (count) *count=0; return 0; }
 }
 int visible_target(DoomCombat *c, DoomVec3 from, uint64_t handle) {
@@ -566,8 +571,10 @@ int damage_target(DoomCombat *c, uint64_t handle, int amount, DoomWeapon weapon)
     void *target=c->dynamic_cast_object(gs,0,c->game+0x1C952A8,c->game+0x1C95390,0);
     if (!target || target==c->world_player || static_cast<unsigned char *>(target)+40!=gs ||
         c->get_level(static_cast<unsigned char *>(c->world_player)+40)!=c->world_level) return 0;
-    if (damage_type!=2 || weapon==DOOM_PLASMA)
-        if (doom_hostility_query(c->game,target,c->world_player)!=1) return 0;
+    if (damage_type!=2 || weapon==DOOM_PLASMA) {
+        void *actor=c->dynamic_cast_object(target,0,c->game+0x1C95390,c->game+0x1CA9818,0);
+        if (actor && doom_hostility_query(c->game,target,c->world_player)!=1) return 0;
+    }
     float damage=static_cast<float>(amount)*HostDamagePerDoomUnit*c->world_damage_scale;
     if (!std::isfinite(damage) || damage<=0 || damage>100000.0f) return 0;
     int invalid_item=-1;

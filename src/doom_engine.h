@@ -52,6 +52,8 @@ unsigned doom_engine_death_drain(DoomEngine *engine, DoomDeathRecord *out, unsig
 void doom_engine_bind(DoomEngine *engine, DoomPlayer *player, DoomEventFn emit, void *context);
 void doom_engine_reset_damage(DoomEngine *engine);
 void doom_engine_configure(DoomEngine *engine, int classic, float incoming, float outgoing);
+void doom_engine_set_texture_filtering(DoomEngine *engine, int bilinear);
+int doom_engine_texture_filtering(DoomEngine *engine);
 void doom_engine_set_fire_key(DoomEngine *engine, int virtual_key);
 int doom_engine_initialize(DoomEngine *engine);
 int doom_engine_activate(DoomEngine *engine, uint32_t map_generation);

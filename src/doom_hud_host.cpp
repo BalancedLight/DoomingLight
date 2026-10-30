@@ -27,6 +27,7 @@ using LoadUi = void (__fastcall *)(void *, const TtlString *, const TtlString *,
 using UnloadUi = int (__fastcall *)(void *, const TtlString *);
 using IsLoaded = unsigned char (__fastcall *)(void *, const TtlString *);
 using SetTexture = unsigned char (__fastcall *)(void *, const TtlString *);
+using SetSpriteMaterial = void (__fastcall *)(void *, const TtlString *);
 using Register = int (__fastcall *)(void *, const TtlString *, unsigned, int, unsigned char, const TtlString *, unsigned);
 using Screen = void *(__fastcall *)(void *, int);
 using FindElement = void *(__fastcall *)(void *, const TtlString *, unsigned char);
@@ -92,7 +93,8 @@ bool mount_pack() {
 struct HudTexture {
     void *texture; uint8_t *pixels, *last_frame;
     unsigned width, height, backing_width, backing_height, viewport_width, viewport_height, source_height;
-    int origin_x, origin_y; float scale; bool registered, ready, has_frame;
+    int origin_x, origin_y, canvas_left, canvas_top, canvas_width, canvas_height;
+    float scale; bool registered, ready, has_frame;
     char actual_name[128], alias[64];
 };
 struct DoomHudHost {
@@ -100,14 +102,18 @@ struct DoomHudHost {
     HudTexture current, pending, retiring; ULONGLONG next_texture_attempt;
     Create create; Update update; Unload unload; LoadUi load_ui; UnloadUi unload_ui;
     IsLoaded loaded; SetTexture set_texture;
+    SetSpriteMaterial set_sprite_material;
+    bool material_owned, material_applied, bilinear;
     int screen_id; Show show; Hide hide; Unregister unregister; bool owns_screen, shown;
     SetPos position; SetSize width, height; float scale; LONG client_width, client_height;
+    int draw_x, draw_y, draw_width, draw_height;
     Screen find_screen; FindElement find_element; GetOwner get_owner;
     GetScreenId get_screen_id; GetScriptName get_script_name; void *root;
     Lookup lookup; IsVisible is_visible; SetVisible set_visible;
     void *stock_root; void *stock_elements[8]; bool stock_owned[8];
     void *death_root, *death_elements[5]; bool death_owned[5];
     DoomHudHost *layers[2]; unsigned layer_kind; bool split_layers, inside_layered_update;
+    float status_scale;
 };
 static const char *const stock_ids[8] = {"HudHealthIndicator", "HudStamina", "HudRadar", "HudPrimaryWeaponIndicator", "HudSecondaryWeaponIndicator", "HudWeaponSelection", "HudCrosshair", "HudReloadNotify"};
 static void *find_stock_root(DoomHudHost *h) {
@@ -177,7 +183,7 @@ static bool refresh_screen(DoomHudHost *h) {
     TtlString id = str("I_DLUMAModHud");
     void *image = h->find_element(root, &id, 1);
     if (!image) { h->root = root; h->image = nullptr; h->bound = false; return false; }
-    if (h->root != root || h->image != image) { h->root = root; h->image = image; h->bound = false; h->shown = false; h->scale = 0; }
+    if (h->root != root || h->image != image) { h->root = root; h->image = image; h->bound = false; h->shown = false; h->material_applied = false; h->scale = 0; h->draw_width = 0; h->draw_height = 0; }
     static const char *const ids[2] = {"I_DLUMAStatusBar", "I_DLUMAMessage"};
     for (unsigned i = 0; i < 2; ++i) if (h->layers[i]) {
         TtlString layer_id = str(ids[i]);
@@ -185,7 +191,9 @@ static bool refresh_screen(DoomHudHost *h) {
         if (!child || h->get_owner(child) != owner) return false;
         if (h->layers[i]->image != child) {
             h->layers[i]->image = child; h->layers[i]->bound = false;
+            h->layers[i]->material_applied = false;
             h->layers[i]->shown = false; h->layers[i]->scale = 0;
+            h->layers[i]->draw_width = 0; h->layers[i]->draw_height = 0;
         }
     }
     return true;
@@ -210,6 +218,26 @@ static bool physical_texture_fits(unsigned width, unsigned height) {
     while (backing_width < width) backing_width *= 2;
     while (backing_height < height) backing_height *= 2;
     return static_cast<size_t>(backing_width) * backing_height <= (64u * 1024u * 1024u) / 4;
+}
+struct HudGeometry { int left, top, width, height; };
+static HudGeometry layer_geometry(unsigned kind, int client_width, int client_height,
+                                  float scale, bool align_weapon, float status_scale) {
+    const bool fit_status = kind == 1 && scale == 0.0f;
+    const int source_height = kind == 1 ? 32 : kind == 2 ? 16 : 200;
+    const int full_height = fit_status ? (client_width * 3 + 2) / 4
+                                       : static_cast<int>(client_height * scale + 0.5f);
+    const int width = fit_status ? client_width : (full_height * 4 + 1) / 3;
+    const int height = (full_height * source_height + 100) / 200;
+    HudGeometry result = {kind == 2 ? 0 : (client_width - width) / 2,
+                          kind == 2 ? 0 : client_height - height, width, height};
+    if (kind == 0 && align_weapon) {
+        const int bar_full_height = status_scale == 0.0f ? (client_width * 3 + 2) / 4
+            : static_cast<int>(client_height * status_scale + 0.5f);
+        const int weapon_bar_height = (full_height * 32 + 100) / 200;
+        const int actual_bar_height = (bar_full_height * 32 + 100) / 200;
+        result.top += weapon_bar_height - actual_bar_height;
+    }
+    return result;
 }
 static bool create_texture(DoomHudHost *h, HudTexture *slot, unsigned width, unsigned height, unsigned source_height) {
     static volatile LONG serial = 0;
@@ -257,6 +285,8 @@ static void expand_frame(HudTexture *slot, const uint8_t *rgba, float scale,
         slot->scale = scale; slot->has_frame = true;
         slot->viewport_width = viewport_width; slot->viewport_height = viewport_height;
         slot->origin_x = origin_x; slot->origin_y = origin_y;
+        slot->canvas_left = canvas_left; slot->canvas_top = canvas_top;
+        slot->canvas_width = canvas_width; slot->canvas_height = canvas_height;
         return;
     }
     const int left = canvas_left - origin_x, top = canvas_top - origin_y;
@@ -291,6 +321,8 @@ static void expand_frame(HudTexture *slot, const uint8_t *rgba, float scale,
     slot->scale = scale; slot->has_frame = true;
     slot->viewport_width = viewport_width; slot->viewport_height = viewport_height;
     slot->origin_x = origin_x; slot->origin_y = origin_y;
+    slot->canvas_left = canvas_left; slot->canvas_top = canvas_top;
+    slot->canvas_width = canvas_width; slot->canvas_height = canvas_height;
 }
 extern "C" DoomHudHost *doom_hud_host_open(void *level, uint32_t generation) {
     HMODULE engine = GetModuleHandleW(L"engine_x64_rwdi.dll");
@@ -336,7 +368,7 @@ extern "C" DoomHudHost *doom_hud_host_open(void *level, uint32_t generation) {
         if (image) host = doom_hud_host_create(level, image, generation);
         if (!host && screen_id >= 0) (void)unregister(level, screen_id);
         if (host) {
-            host->screen_id = screen_id; host->show = show; host->hide = hide; host->unregister = unregister; host->owns_screen = true;
+            host->screen_id = screen_id; host->show = show; host->hide = hide; host->unregister = unregister; host->owns_screen = true; host->material_owned = true;
             host->find_screen = find_screen; host->find_element = find_element; host->get_owner = get_owner;
             host->get_screen_id = get_id; host->get_script_name = get_script;
             host->lookup = lookup; host->is_visible = is_visible; host->set_visible = set_visible;
@@ -361,12 +393,24 @@ extern "C" DoomHudHost *doom_hud_host_create(void *level, void *image, uint32_t 
     h->unload_ui = reinterpret_cast<UnloadUi>(GetProcAddress(engine, "?UnloadUITexture@ILevel@@QEAAHAEBV?$string_base@D@ttl@@@Z"));
     h->loaded = reinterpret_cast<IsLoaded>(GetProcAddress(engine, "?IsUITextureLoaded@ILevel@@QEAA_NAEBV?$string_base@D@ttl@@@Z"));
     h->set_texture = reinterpret_cast<SetTexture>(GetProcAddress(engine, "?SetTexture@IUIImage@@QEAA_NAEBV?$string_base@D@ttl@@@Z"));
+    // This per-image material entry is validated for the retail Player engine.
+    // Other profiles keep the existing material until independently validated.
+    static const unsigned char material_prefix[] = {0x48,0x83,0xec,0x28,0x48,0x8b,0x49,0x18,0x48,0x85,0xc9,0x74,0x1a};
+    auto material = reinterpret_cast<SetSpriteMaterial>(GetProcAddress(engine, "?SetSpriteMaterial@IUIElementView@@QEAAXAEBV?$string_base@D@ttl@@@Z"));
+    if (identity(engine, engine_hash) && reinterpret_cast<void *>(material) == base + 0x5e6f80 &&
+        !memcmp(base + 0x5e6f80, material_prefix, sizeof(material_prefix))) h->set_sprite_material = material;
     h->position = reinterpret_cast<SetPos>(GetProcAddress(engine, "?SetRelativePos@IUIElement@@QEAAXAEBVvec3@@@Z"));
     h->width = reinterpret_cast<SetSize>(GetProcAddress(engine, "?SetSizeX@IUIElement@@QEAAXM@Z"));
     h->height = reinterpret_cast<SetSize>(GetProcAddress(engine, "?SetSizeY@IUIElement@@QEAAXM@Z"));
     h->set_visible = reinterpret_cast<SetVisible>(GetProcAddress(engine, "?SetVisible@IUIElement@@QEAAX_N@Z"));
     if (!h->load_ui || !h->unload_ui || !h->loaded || !h->set_texture || !h->position || !h->width || !h->height || !h->set_visible) { free(h); return nullptr; }
     return h;
+}
+extern "C" void doom_hud_host_set_filtering(DoomHudHost *h, int bilinear) {
+    if (!h) return;
+    const bool enabled = bilinear != 0;
+    if (h->bilinear != enabled) { h->bilinear = enabled; h->material_applied = false; }
+    for (auto *layer : h->layers) if (layer) doom_hud_host_set_filtering(layer, bilinear);
 }
 extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, uint32_t generation, const uint8_t *rgba, float scale) {
     if (!h || !rgba || level != h->level || generation != h->generation) return 0;
@@ -384,14 +428,14 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
         if (window) window = GetAncestor(window, GA_ROOT);
         if (!window || !GetWindowThreadProcessId(window, &pid) || pid != GetCurrentProcessId() ||
             !GetClientRect(window, &rect) || rect.right <= rect.left || rect.bottom <= rect.top) return 0;
-        if (!(scale >= 0.5f && scale <= 2.0f)) return 0;
+        const bool fit_status = h->layer_kind == 1 && scale == 0.0f;
+        if (!fit_status && !(scale >= 0.5f && scale <= 2.0f)) return 0;
         const LONG client_width = rect.right - rect.left, client_height = rect.bottom - rect.top;
         const unsigned source_height = h->layer_kind == 1 ? 32u : h->layer_kind == 2 ? 16u : 200u;
-        const int full_height = static_cast<int>(client_height * scale + 0.5f);
-        const int canvas_width = (full_height * 4 + 1) / 3;
-        const int canvas_height = (full_height * static_cast<int>(source_height) + 100) / 200;
-        const int canvas_left = h->layer_kind == 2 ? 0 : (client_width - canvas_width) / 2;
-        const int canvas_top = h->layer_kind == 2 ? 0 : client_height - canvas_height;
+        const HudGeometry geometry = layer_geometry(h->layer_kind, client_width, client_height, scale,
+            h->split_layers && h->inside_layered_update, h->status_scale);
+        const int canvas_left = geometry.left, canvas_top = geometry.top;
+        const int canvas_width = geometry.width, canvas_height = geometry.height;
         int origin_x = canvas_left < 0 ? 0 : canvas_left;
         int origin_y = canvas_top < 0 ? 0 : canvas_top;
         const int right = canvas_left + canvas_width > client_width ? client_width : canvas_left + canvas_width;
@@ -420,6 +464,8 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
             slot->viewport_width != static_cast<unsigned>(client_width) ||
             slot->viewport_height != static_cast<unsigned>(client_height) ||
             slot->origin_x != origin_x || slot->origin_y != origin_y ||
+            slot->canvas_left != canvas_left || slot->canvas_top != canvas_top ||
+            slot->canvas_width != canvas_width || slot->canvas_height != canvas_height ||
             std::memcmp(slot->last_frame, rgba, 320u * source_height * 4u)) {
             expand_frame(slot, rgba, scale, static_cast<unsigned>(client_width),
                          static_cast<unsigned>(client_height), origin_x, origin_y,
@@ -452,12 +498,22 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
         } else if (!h->bound) {
             h->bound = h->set_texture(image, &alias) != 0;
         }
-        if (h->bound && (scale != h->scale || client_width != h->client_width || client_height != h->client_height)) {
+        if (h->bound && h->material_owned && h->set_sprite_material && !h->material_applied) {
+            TtlString material_name = str(h->bilinear ? "sprite.mat" : "sprite_nofiltering.mat");
+            h->set_sprite_material(image, &material_name);
+            h->material_applied = true;
+        }
+        const int image_width = physical_size ? static_cast<int>(draw_width) : canvas_width;
+        const int image_height = physical_size ? static_cast<int>(draw_height) : canvas_height;
+        if (h->bound && (scale != h->scale || client_width != h->client_width || client_height != h->client_height ||
+                         h->draw_x != origin_x || h->draw_y != origin_y ||
+                         h->draw_width != image_width || h->draw_height != image_height)) {
             Vec3 position = {static_cast<float>(origin_x), static_cast<float>(origin_y), 0.0f};
-            h->width(image, static_cast<float>(physical_size ? draw_width : canvas_width));
-            h->height(image, static_cast<float>(physical_size ? draw_height : canvas_height));
+            h->width(image, static_cast<float>(image_width));
+            h->height(image, static_cast<float>(image_height));
             h->position(image, &position);
             h->scale = scale; h->client_width = client_width; h->client_height = client_height;
+            h->draw_x = origin_x; h->draw_y = origin_y; h->draw_width = image_width; h->draw_height = image_height;
         }
         if (h->bound && !h->shown) { h->set_visible(image, 1); if (h->owns_screen) h->show(level, h->screen_id, nullptr); h->shown = true; }
         if (h->owns_screen && h->bound && h->shown && (!h->split_layers || (h->layers[0] && h->layers[0]->bound))) stock_visibility(h, true);
@@ -473,6 +529,9 @@ extern "C" int doom_hud_host_update_layers(DoomHudHost *h, void *level, uint32_t
         if (!refresh_screen(h)) return 0;
         void *owner = h->get_owner(h->root);
         static const char *const ids[2] = {"I_DLUMAStatusBar", "I_DLUMAMessage"};
+        if (!(hud_scale == 0.0f || (hud_scale >= 0.5f && hud_scale <= 2.0f)) ||
+            !(weapon_scale >= 0.5f && weapon_scale <= 2.0f)) return 0;
+        h->status_scale = hud_scale;
         h->split_layers = true;
         for (unsigned i = 0; i < 2; ++i) if (!h->layers[i]) {
             TtlString id = str(ids[i]);
@@ -481,6 +540,8 @@ extern "C" int doom_hud_host_update_layers(DoomHudHost *h, void *level, uint32_t
             h->layers[i] = doom_hud_host_create(level, image, generation);
             if (!h->layers[i]) return 0;
             h->layers[i]->layer_kind = i + 1;
+            h->layers[i]->material_owned = true;
+            doom_hud_host_set_filtering(h->layers[i], h->bilinear ? 1 : 0);
         }
         h->inside_layered_update = true;
         const int weapon_ready = doom_hud_host_update(h, level, nullptr, generation, weapon, weapon_scale);

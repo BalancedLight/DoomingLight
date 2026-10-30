@@ -5,8 +5,12 @@ See LICENSE and the notices in the source files.
 
 - Doom source release: Copyright id Software, GPL-2.0-or-later.
   https://github.com/id-Software/DOOM
-- Music format and instrument references: Chocolate Doom, GPL-2.0-or-later.
-  https://github.com/chocolate-doom/chocolate-doom
+- Music format and playback references: Chocolate Doom, GPL-2.0-or-later.
+  Its `src/i_oplmusic.c` credits id Software and Simon Howard; `src/mus2mid.c`
+  also credits Ben Ryves. The project uses its own MUS/MIDI parser and
+  GENMIDI sequencer. The reference revision examined is
+  37ee739de526e08717970ba1faa24cd78f81da08:
+  https://github.com/chocolate-doom/chocolate-doom/tree/37ee739de526e08717970ba1faa24cd78f81da08
 - Nuked OPL3 and Nuked-OPL3-fast: Copyright Nuke.YKT and Tony Gies,
   LGPL-2.1-or-later. Source, license and pinned blob identities are in
   third_party/opl.

@@ -135,7 +135,7 @@ struct DoomEngine {
     bool jump_static_ready = false;
     bool interaction_static_ready = false;
     bool player_static_ready = false;
-    int classic = 0; float incoming = 1, outgoing = 1;
+    int classic = 0, bilinear_filtering = 0; float incoming = 1, outgoing = 1;
     bool in_update_scope() const { return update_depth && game_thread == GetCurrentThreadId(); }
     void *game_object() const { return game ? *reinterpret_cast<void **>(game + 0x1D07F88) : nullptr; }
     void *local_player() const { void *g = game_object(); return g ? reinterpret_cast<GetPlayer>(game + 0x3C2D90)(g) : nullptr; }
@@ -511,6 +511,16 @@ extern "C" void doom_engine_configure(DoomEngine *e, int classic, float incoming
     if (!e) return;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     e->classic=classic; e->incoming=incoming; e->outgoing=outgoing;
+}
+extern "C" void doom_engine_set_texture_filtering(DoomEngine *e, int bilinear) {
+    if (!e) return;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    e->bilinear_filtering=bilinear ? 1 : 0;
+}
+extern "C" int doom_engine_texture_filtering(DoomEngine *e) {
+    if (!e) return 0;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    return e->bilinear_filtering;
 }
 extern "C" void doom_engine_set_fire_key(DoomEngine *e, int virtual_key) {
     if (!e || virtual_key < 1 || virtual_key > 254) return;
@@ -1005,6 +1015,7 @@ extern "C" int doom_engine_present(DoomEngine *e, const uint8_t *rgba, unsigned 
         e->next_hud_attempt = now + 5000;
         e->hud = doom_hud_host_open(e->level, e->generation);
     }
+    if (e->hud) doom_hud_host_set_filtering(e->hud,e->bilinear_filtering);
     return e->hud && doom_hud_host_update(e->hud, e->level, nullptr, e->generation, rgba, scale);
 }
 extern "C" int doom_engine_present_layers(DoomEngine *e, const uint8_t *weapon,
@@ -1020,6 +1031,7 @@ extern "C" int doom_engine_present_layers(DoomEngine *e, const uint8_t *weapon,
         e->next_hud_attempt = now + 5000;
         e->hud = doom_hud_host_open(e->level, e->generation);
     }
+    if (e->hud) doom_hud_host_set_filtering(e->hud,e->bilinear_filtering);
     return e->hud && doom_hud_host_update_layers(e->hud, e->level, e->generation,
         weapon, status, message, hud_scale, weapon_scale);
 }

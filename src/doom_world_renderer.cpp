@@ -14,7 +14,7 @@ using ParseParticle = unsigned char (__fastcall *)(void *, const char *, const c
 using ParseEmitter = unsigned char (__fastcall *)(void *, void *, const char *, const char *);
 using GetFx = void *(__fastcall *)(void *);
 using CreateFx = unsigned (__fastcall *)(void *, void *, void *, const float *, const float *, void *, int);
-using MoveFx = unsigned char (__fastcall *)(void *, unsigned, const float *);
+using MoveFx = unsigned char (__fastcall *)(void *, unsigned, const float *, const float *, const float *);
 using KillFx = void (__fastcall *)(void *, unsigned);
 using ReleaseDef = void (__fastcall *)(void *, void *, void *);
 using CreateTexture = void *(__fastcall *)(void *, const EngineString *, int, int, unsigned, unsigned char, unsigned);
@@ -76,7 +76,7 @@ extern "C" DoomWorldRenderer *doom_world_renderer_create(void *module, void *lev
           {0x1e72e0,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x48,0x89}},
           {0x1e72a0,{0x48,0x83,0xec,0x28,0x48,0x8b,0x41,0x08,0x48,0x8b,0x88,0xd0}},
           {0x1e23e0,{0x48,0x83,0xec,0x28,0x48,0x8b,0x41,0x08,0x48,0x8b,0x88,0xd0}},
-          {0x1e1a70,{0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x48,0x89}},
+          {0x1ec770,{0x48,0x8b,0xc4,0x48,0x89,0x58,0x10,0x48,0x89,0x68,0x18,0x56}},
           {0x204660,{0x48,0x85,0xd2,0x0f,0x84,0xfb,0,0,0,0x48,0x89,0x6c}},
           {0x29c1c0,{0x48,0x83,0xec,0x68,0x48,0x8b,0x02,0x48,0x8d,0x15,0x73,0xb1}},
           {0x29c230,{0x48,0x83,0xec,0x68,0x8b,0x84,0x24,0xc0,0,0,0,0x48}},
@@ -96,7 +96,7 @@ extern "C" DoomWorldRenderer *doom_world_renderer_create(void *module, void *lev
     HeapFree(GetProcessHeap(),0,r); return nullptr;
 }
 extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level,uint32_t generation,const uint8_t *rgba,unsigned edge,const float position[3],float size) {
-    if (!owner || !rgba || !finite_position(position) || edge<16 || edge>512 || (edge&(edge-1)) || !(size>0 && size<=5)) return 0;
+    if (!owner || !rgba || !finite_position(position) || edge<16 || edge>512 || (edge&(edge-1)) || !(size>0 && size<=8)) return 0;
     Impl *r=&owner->impl; Slot *s=nullptr; char script[512], unique[64];
     if(!identities(r,level,generation)) return 0;
     for (auto &entry:r->slots) if(!entry.serial) { s=&entry; break; }
@@ -134,7 +134,7 @@ extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level
         reinterpret_cast<ReleaseMaterial>(mv[4])(r->mats,material_ptr);
         *material_ptr=clone;
         auto **fxv=*reinterpret_cast<void ***>(r->fx);
-        if(fxv[37]!=b+0x1e72e0 || fxv[3]!=b+0x1e1a70 || fxv[35]!=b+0x1e72a0 || fxv[2]!=b+0x1e23e0) __leave;
+        if(fxv[37]!=b+0x1e72e0 || fxv[70]!=b+0x1ec770 || fxv[35]!=b+0x1e72a0 || fxv[2]!=b+0x1e23e0) __leave;
         const float up[3]={0,1,0};
         s->handle=reinterpret_cast<CreateFx>(fxv[37])(r->fx,s->emitter,s->particle,position,up,nullptr,-1);
         if(!s->handle) { trace_failure("Doom world: emitter creation failed\n"); __leave; }
@@ -157,7 +157,15 @@ extern "C" int doom_world_renderer_update(DoomWorldRenderer *owner,void *level,u
 }
 extern "C" int doom_world_renderer_move(DoomWorldRenderer *owner,void *level,uint32_t generation,uint32_t token,const float position[3]) {
     if(!owner || !token || !finite_position(position) || !identities(&owner->impl,level,generation)) return 0;
-    __try { for(auto &s:owner->impl.slots) if(s.serial==token && s.handle) { auto **v=*reinterpret_cast<void ***>(owner->impl.fx); return reinterpret_cast<MoveFx>(v[3])(owner->impl.fx,s.handle,position)!=0; } } __except(EXCEPTION_EXECUTE_HANDLER) { owner->impl.quarantined=true; } return 0;
+    __try {
+        for(auto &s:owner->impl.slots) if(s.serial==token && s.handle) {
+            auto **v=*reinterpret_cast<void ***>(owner->impl.fx);
+            if(v[70]!=owner->impl.base+0x1ec770) return 0;
+            /* FXSetPosition edits a local curve which is multiplied by the
+             * spawn transform. Update its world-space start transform instead. */
+            return reinterpret_cast<MoveFx>(v[70])(owner->impl.fx,s.handle,position,nullptr,nullptr)!=0;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) { owner->impl.quarantined=true; } return 0;
 }
 extern "C" int doom_world_renderer_remove(DoomWorldRenderer *owner,void *level,uint32_t generation,uint32_t token) {
     if(!owner || !token || !identities(&owner->impl,level,generation)) return 0;

@@ -136,6 +136,8 @@ struct DoomEngine {
     bool jump_static_ready = false;
     bool parkour_static_ready = false;
     bool stock_profile = false, cheats_enabled = true;
+    void *ledge_actor = nullptr;
+    bool ledge_hold = false;
     bool interaction_static_ready = false;
     bool player_static_ready = false;
     int classic = 0, bilinear_filtering = 0, dynamic_lights = 1; float incoming = 1, outgoing = 1;
@@ -395,6 +397,7 @@ static int current_parkour(DoomEngine *e, void *actor,DoomEngineFrame *frame) {
     if (!e->parkour_static_ready || !actor || !e->in_update_scope()) return 0;
     __try {
         if (actor!=e->local_player() || current_player_level(e)!=e->level) return 0;
+        if (e->ledge_actor!=actor) { e->ledge_actor=actor; e->ledge_hold=false; }
         void *move=owned_controller(e,actor,0xbc0,0x180b368);
         void *edge=owned_controller(e,actor,0xc80,0x1808d88);
         void *ladder=owned_controller(e,actor,0xbf8,0x180a4c8);
@@ -406,9 +409,10 @@ static int current_parkour(DoomEngine *e, void *actor,DoomEngineFrame *frame) {
         if (frame->edge_active) {
             const unsigned state=frame->edge_state;
             if (state==1 || state==2 || state==3 || state==11 || state==12 || state==14 || state==15)
-                return 2;
-            return 1;
+                e->ledge_hold=true;
+            return e->ledge_hold ? 2 : 1;
         }
+        e->ledge_hold=false;
         if (frame->ladder_active) return 1;
         return frame->move_state>=1 && frame->move_state<=23 ? 1 : 0;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
@@ -752,6 +756,7 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
     if (!e) return;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     (void)doom_menu_guard_stop();
+    e->ledge_actor=nullptr; e->ledge_hold=false;
 #if defined(DOOM_MODE_LAB)
     if (e->death_presentation_started && e->in_update_scope() &&
         doom_death_presentation_stop()) e->death_presentation_started=false;

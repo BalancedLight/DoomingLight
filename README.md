@@ -81,8 +81,9 @@ The C core adapts Doom's gameplay values and rules. Music decoding and instrumen
 handling use the Doom and Chocolate Doom formats with Nuked OPL3 synthesis.
 See THIRD_PARTY_NOTICES.md and the included licenses.
 
-All graphics, sounds, instruments and music are loaded from the user's local
-IWAD. The distribution contains no Doom game data.
+Doom graphics, sounds and music are loaded from the user's local IWAD.
+SoundFont music uses the separately selected SF2 file. The distribution
+contains no Doom game data or SoundFonts.
 
 
 

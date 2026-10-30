@@ -851,6 +851,26 @@ extern "C" const char *doom_engine_attack_reason(DoomEngine *e) {
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     return e->attack_reason;
 }
+extern "C" void doom_engine_attack_counts(DoomEngine *e, unsigned *actors, unsigned *tested, unsigned *hit) {
+    if (actors) *actors=0;
+    if (tested) *tested=0;
+    if (hit) *hit=0;
+    if (!e) return;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    if (actors) *actors=doom_combat_actor_count(e->combat);
+    if (tested) *tested=doom_combat_boxes_tested(e->combat);
+    if (hit) *hit=doom_combat_boxes_hit(e->combat);
+}
+extern "C" int doom_engine_damage_observation(DoomEngine *e, DoomDamageObservation *out) {
+    if (!e || !out) return 0;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    return doom_combat_last_observation(e->combat,out);
+}
+extern "C" unsigned doom_engine_drain_damage_observations(DoomEngine *e, DoomDamageObservation *out, unsigned capacity) {
+    if (!e || !out || !capacity) return 0;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    return doom_combat_drain_observations(e->combat,out,capacity);
+}
 extern "C" int doom_engine_world_bind(DoomEngine *e, DoomWorldHost *host) {
     if (!e || !host) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
@@ -986,4 +1006,20 @@ extern "C" int doom_engine_present(DoomEngine *e, const uint8_t *rgba, unsigned 
         e->hud = doom_hud_host_open(e->level, e->generation);
     }
     return e->hud && doom_hud_host_update(e->hud, e->level, nullptr, e->generation, rgba, scale);
+}
+extern "C" int doom_engine_present_layers(DoomEngine *e, const uint8_t *weapon,
+                                           const uint8_t *status, const uint8_t *message,
+                                           float hud_scale, float weapon_scale) {
+    if (!e || !weapon || !status || !message) return 0;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    if (!e->active || !e->in_update_scope() || !e->level ||
+        current_player_level(e) != e->level || !e->gameplay()) return 0;
+    if (!e->hud) {
+        const ULONGLONG now = GetTickCount64();
+        if (now < e->next_hud_attempt) return 0;
+        e->next_hud_attempt = now + 5000;
+        e->hud = doom_hud_host_open(e->level, e->generation);
+    }
+    return e->hud && doom_hud_host_update_layers(e->hud, e->level, e->generation,
+        weapon, status, message, hud_scale, weapon_scale);
 }

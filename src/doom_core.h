@@ -82,7 +82,7 @@ extern "C"
         unsigned owned_mask, kills, random_index, accumulator, cooldown, fire_delay, attack_down,
             refire;
         unsigned face_tics, face_random, shot_fired, invulnerability_tics, switch_phase,
-            plasma_recovery, flash_tics, saw_idle_tics;
+            plasma_recovery, flash_tics, saw_idle_tics, face_attack_tics;
         int face, face_index, weapon_frame, weapon_y, view_height, flash_weapon, flash_frame;
         char cheat[16];
         unsigned cheat_len;

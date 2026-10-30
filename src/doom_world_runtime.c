@@ -115,7 +115,7 @@ void doom_world_runtime_advance(DoomWorldRuntime *runtime, DoomPlayer *player, u
                                 void *context)
 {
     RuntimeEventContext ctx;
-    unsigned ticks, i;
+    unsigned ticks;
     int fire;
     if (!runtime || !player || !frame)
         return;
@@ -138,7 +138,6 @@ void doom_world_runtime_advance(DoomWorldRuntime *runtime, DoomPlayer *player, u
     ctx.context = context;
     while (ticks--)
     {
-        unsigned char before[DOOM_WORLD_MAX_PICKUPS];
         ctx.spawned_slot = -1;
         fire = frame->fire;
         if (fire && projectile(player->weapon))
@@ -159,21 +158,14 @@ void doom_world_runtime_advance(DoomWorldRuntime *runtime, DoomPlayer *player, u
                 fire = 0;
             }
         }
-        for (i = 0; i < DOOM_WORLD_MAX_PICKUPS; i++)
-            before[i] = (unsigned char)runtime->world.pickups[i].active;
         doom_tick(player, fire, world_event, &ctx);
         if (frame->world_active)
-            doom_world_tick(&runtime->world, player, frame->player_position, frame->player_height,
-                            frame->host);
+            doom_world_tick_with_pickups(&runtime->world, player, frame->player_position, frame->player_height,
+                                         frame->host, pickup, context);
         if (ctx.spawned_slot >= 0 &&
             runtime->world.projectiles[ctx.spawned_slot].state == DOOM_PROJECTILE_FREE) {
             refund(player, ctx.spawned_weapon);
             runtime->flags |= DOOM_WORLD_RUNTIME_UNSUPPORTED_PROJECTILE;
         }
-        if (pickup)
-            for (i = 0; i < DOOM_WORLD_MAX_PICKUPS; i++)
-                if (before[i] && !runtime->world.pickups[i].active &&
-                    runtime->world.pickups[i].age <= 35u * 60u)
-                    pickup(context, runtime->world.pickups[i].kind);
     }
 }

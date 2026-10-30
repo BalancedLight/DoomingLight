@@ -6,6 +6,7 @@
 #include "doom_hud.h"
 #include "doom_music.h"
 #include "doom_movement.h"
+#include "doom_pickup_feedback.h"
 #include "doom_synth.h"
 #include "doom_wad.h"
 #include "doom_world_display.h"
@@ -66,7 +67,7 @@ struct PreparedMusic {
 struct Settings {
     std::string game = "auto", doom, doom2, music = "doom";
     bool classic = false, cheats = true;
-    int track = 0, hud = 100, incoming = 100, outgoing = 100;
+    int track = 0, hud = 100, weaponScale = 100, incoming = 100, outgoing = 100;
     int musicVolume = 70, effectsVolume = 100;
 };
 
@@ -87,13 +88,19 @@ struct Runtime {
     std::future<PreparedMusic> rendering;
     PreparedMusic pendingMusic;
     std::shared_ptr<std::atomic<bool>> cancelRender;
-    std::array<uint8_t, 320 * 200 * 4> pixels{};
+    std::array<uint8_t, 320 * 200 * 4> weaponPixels{};
+    std::array<uint8_t, 320 * 32 * 4> statusPixels{};
+    std::array<uint8_t, 320 * 16 * 4> messagePixels{};
+    DoomPickupFeedback pickupFeedback{};
+    bool pickupSoundQueued = false;
+    uint64_t sawStartupUntil = 0;
     uint64_t updateToken = 0, configToken = 0, musicToken = 0;
     uint64_t lastTick = 0, retryMusicAt = 0;
     uint64_t musicEpoch = 0;
 #if defined(DOOM_MODE_LAB)
     uint64_t nextPositionLog = 0;
     std::array<unsigned, DOOM_WEAPON_COUNT> attackLogCount{};
+    std::array<unsigned, DOOM_WEAPON_COUNT> damageLogCount{};
     unsigned inputLogCount = 0;
     int previousFire = -1, previousPaused = -1;
     DoomWorldRuntime world{};
@@ -157,6 +164,7 @@ struct Runtime {
         settings.cheats = integer("cheats", 1, 0, 1) != 0;
         settings.track = integer("default_track", 0, 0, 49);
         settings.hud = integer("hud_scale", 100, 50, 200);
+        settings.weaponScale = integer("weapon_scale", 100, 50, 200);
         settings.incoming = integer("incoming_damage", 100, 10, 500);
         settings.outgoing = integer("outgoing_damage", 100, 10, 500);
         settings.musicVolume = integer("music_volume", 70, 0, 100);
@@ -165,6 +173,7 @@ struct Runtime {
             settings.outgoing / 100.f);
         doom_engine_set_fire_key(engine, integer("fire_key", 162, 1, 254));
         doom_audio_music_volume(audio, settings.musicVolume / 100.f);
+        (void)doom_audio_weapon_volume(audio, settings.effectsVolume / 100.f);
         if (oldMusic != settings.music) {
             musicOverride = false;
             stopMusic();
@@ -323,19 +332,59 @@ struct Runtime {
             doom_sound_free(&effect);
         }
     }
+    void weaponSound(unsigned soundId, const char* name) {
+        if (soundId == DOOM_SOUND_SAWIDL && now() < sawStartupUntil) return;
+        DoomSound effect{};
+        if (!audio || !assets.wad || !doom_wad_sound(assets.wad.get(), name, &effect)) return;
+        if (soundId == DOOM_SOUND_SAWUP) {
+            if (doom_audio_weapon_once_pcm(audio, soundId + 1, effect.samples, effect.count,
+                    effect.rate, settings.effectsVolume / 100.f))
+                sawStartupUntil = now() + static_cast<uint64_t>(effect.count) * 1000u / effect.rate;
+        } else {
+            sawStartupUntil = 0;
+            (void)doom_audio_weapon_loop_pcm(audio, soundId + 1, effect.samples, effect.count,
+                effect.rate, settings.effectsVolume / 100.f);
+        }
+        doom_sound_free(&effect);
+    }
+    void stopWeaponSound() {
+        doom_audio_weapon_stop(audio);
+        sawStartupUntil = 0;
+    }
+#if defined(DOOM_MODE_LAB)
+    void logDamage(const DoomDamageObservation& observation) const {
+        char before[32] = "unavailable", after[32] = "unavailable", message[224]{};
+        if (observation.before_valid)
+            std::snprintf(before, sizeof(before), "%.3f", static_cast<double>(observation.before));
+        if (observation.after_valid)
+            std::snprintf(after, sizeof(after), "%.3f", static_cast<double>(observation.after));
+        std::snprintf(message, sizeof(message),
+            "Doom lab damage: weapon=%d target=%d native=%.3f before=%s after=%s removed=%d",
+            observation.weapon, observation.target_id, static_cast<double>(observation.native_damage),
+            before, after, observation.removed);
+        log("INFO", message);
+    }
+#endif
     static void onDoomEvent(void* context, const DoomEvent* event) {
         Runtime& self = *static_cast<Runtime*>(context);
         if (!event) return;
         if (event->type == DOOM_EVENT_ATTACK) {
             const int result = doom_engine_attack(self.engine, event);
 #if defined(DOOM_MODE_LAB)
+            const bool dispatched=std::strcmp(doom_engine_attack_reason(self.engine), "damage_dispatched")==0;
             if (event->weapon >= 0 && event->weapon < DOOM_WEAPON_COUNT &&
-                self.attackLogCount[static_cast<size_t>(event->weapon)]++ < 16) {
-                char message[192]{};
+                (dispatched ? self.damageLogCount : self.attackLogCount)[static_cast<size_t>(event->weapon)]++ < 16) {
+                unsigned actors=0, tested=0, hit=0;
+                doom_engine_attack_counts(self.engine, &actors, &tested, &hit);
+                char message[256]{};
                 std::snprintf(message, sizeof(message),
-                    "Doom lab attack: weapon=%d damage=%d result=%d reason=%s",
-                    event->weapon, event->damage, result, doom_engine_attack_reason(self.engine));
+                    "Doom lab attack: weapon=%d damage=%d result=%d reason=%s actors=%u tested=%u boxes_hit=%u",
+                    event->weapon, event->damage, result, doom_engine_attack_reason(self.engine),
+                    actors, tested, hit);
                 self.log("INFO", message);
+                DoomDamageObservation observation{};
+                if (dispatched && doom_engine_damage_observation(self.engine, &observation))
+                    self.logDamage(observation);
             }
 #else
             (void)result;
@@ -346,8 +395,12 @@ struct Runtime {
             static const char* const names[] = {"DSPISTOL", "DSSHOTGN", "DSSGCOCK", "DSDSHTGN",
                 "DSDBOPN", "DSDBLOAD", "DSDBCLS", "DSSAWUP", "DSSAWIDL", "DSSAWFUL",
                 "DSRLAUNC", "DSPLASMA", "DSBFG"};
-            if (event->value >= 0 && static_cast<size_t>(event->value) < sizeof(names) / sizeof(names[0]))
-                self.sound(names[event->value]);
+            if (event->value >= 0 && static_cast<size_t>(event->value) < sizeof(names) / sizeof(names[0])) {
+                if (event->value == DOOM_SOUND_SAWUP || event->value == DOOM_SOUND_SAWIDL ||
+                    event->value == DOOM_SOUND_SAWFUL)
+                    self.weaponSound(static_cast<unsigned>(event->value), names[event->value]);
+                else self.sound(names[event->value]);
+            }
         }
         else if (event->type == DOOM_EVENT_MUSIC) {
             char name[9]{}; DoomLump lump{};
@@ -358,8 +411,10 @@ struct Runtime {
         }
     }
 #if defined(DOOM_MODE_LAB)
-    static void onPickup(void* context, DoomDrop) {
-        static_cast<Runtime*>(context)->sound("DSITEMUP");
+    static void onPickup(void* context, DoomDrop kind, int amount) {
+        Runtime& self = *static_cast<Runtime*>(context);
+        doom_pickup_feedback_record(&self.pickupFeedback, kind, amount);
+        if (amount > 0) self.pickupSoundQueued = true;
     }
 #endif
     void beginAssets() {
@@ -382,6 +437,9 @@ struct Runtime {
     }
     void deactivate() {
         active = false;
+        doom_pickup_feedback_reset(&pickupFeedback);
+        pickupSoundQueued = false;
+        sawStartupUntil = 0;
 #if defined(DOOM_MODE_LAB)
         if (worldDisplay && engine) (void)doom_world_display_close(worldDisplay, engine);
         doom_world_runtime_reset(&world, 0);
@@ -398,7 +456,7 @@ struct Runtime {
         if (!haveGeneration || generation != mapGeneration) {
             deactivate(); generation = mapGeneration; haveGeneration = true;
 #if defined(DOOM_MODE_LAB)
-            attackLogCount.fill(0); inputLogCount = 0; previousFire = previousPaused = -1;
+            attackLogCount.fill(0); damageLogCount.fill(0); inputLogCount = 0; previousFire = previousPaused = -1;
 #endif
             musicOverride = false;
             beginAssets();
@@ -448,8 +506,10 @@ struct Runtime {
             nextPositionLog = now() + 500;
         }
 #endif
-        if (frame.paused) { lastTick = 0; return; }
+        if (frame.paused) { stopWeaponSound(); lastTick = 0; return; }
         if (frame.respawn) {
+            stopWeaponSound();
+            doom_pickup_feedback_reset(&pickupFeedback);
             doom_reset(&player, player.doom2);
 #if defined(DOOM_MODE_LAB)
             doom_world_runtime_reset(&world, generation);
@@ -470,6 +530,10 @@ struct Runtime {
             if (frame.interact_failed) sound("DSNOWAY");
         }
         const uint64_t timestamp = now();
+        const unsigned frameElapsed = lastTick && timestamp >= lastTick
+            ? static_cast<unsigned>(std::min<uint64_t>(timestamp - lastTick, 250)) : 0;
+        doom_pickup_feedback_begin_frame(&pickupFeedback, frameElapsed);
+        pickupSoundQueued = false;
         if (lastTick && timestamp >= lastTick) {
             const unsigned elapsed = static_cast<unsigned>(std::min<uint64_t>(timestamp - lastTick, 250));
 #if defined(DOOM_MODE_LAB)
@@ -493,6 +557,14 @@ struct Runtime {
             }
             doom_world_runtime_advance(&world, &player, elapsed, &worldFrame, onDoomEvent, onPickup, this);
             if (hostBound) doom_engine_world_unbind(engine);
+            DoomDamageObservation observations[64]{};
+            const unsigned observationCount=doom_engine_drain_damage_observations(engine, observations, 64);
+            for (unsigned i=0; i<observationCount; ++i) {
+                const int weapon=observations[i].weapon;
+                if ((weapon==DOOM_ROCKET || weapon==DOOM_PLASMA || weapon==DOOM_BFG) &&
+                    damageLogCount[static_cast<size_t>(weapon)]++ < 16)
+                    logDamage(observations[i]);
+            }
             if (worldDisplay && !doom_world_display_update(worldDisplay, engine, assets.wad.get(),
                                                            &world.world, generation) && !worldDisplayWarned) {
                 log("WARN", "Dooming Light: world sprites could not be displayed.");
@@ -520,8 +592,14 @@ struct Runtime {
 #endif
         }
         lastTick = timestamp;
-        if (doom_hud_render(assets.hud.get(), &player, pixels.data(), pixels.size()))
-            (void)doom_engine_present(engine, pixels.data(), 320, 200, settings.hud / 100.f);
+        if (pickupSoundQueued) sound("DSITEMUP");
+        if (player.weapon != DOOM_CHAINSAW || player.switch_phase == 1 || player.health <= 0)
+            stopWeaponSound();
+        if (doom_hud_render_layers(assets.hud.get(), &player,
+                weaponPixels.data(), weaponPixels.size(), statusPixels.data(), statusPixels.size(),
+                messagePixels.data(), messagePixels.size(), doom_pickup_feedback_text(&pickupFeedback)))
+            (void)doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),
+                messagePixels.data(), settings.hud / 100.f, settings.weaponScale / 100.f);
         musicTick();
     }
     DlumaStatus prepare(const DlumaApiV1* host) {

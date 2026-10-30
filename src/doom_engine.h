@@ -5,6 +5,7 @@
 #include "doom_core.h"
 #include "doom_world.h"
 #include "doom_deaths.h"
+#include "doom_combat.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,6 +59,9 @@ void doom_engine_deactivate(DoomEngine *engine);
 int doom_engine_poll(DoomEngine *engine, DoomEngineFrame *frame);
 int doom_engine_attack(DoomEngine *engine, const DoomEvent *event);
 const char *doom_engine_attack_reason(DoomEngine *engine);
+void doom_engine_attack_counts(DoomEngine *engine, unsigned *actors, unsigned *tested, unsigned *hit);
+int doom_engine_damage_observation(DoomEngine *engine, DoomDamageObservation *out);
+unsigned doom_engine_drain_damage_observations(DoomEngine *engine, DoomDamageObservation *out, unsigned capacity);
 /* Bind and unbind within the same scoped game update. */
 int doom_engine_world_bind(DoomEngine *engine, DoomWorldHost *host);
 void doom_engine_world_unbind(DoomEngine *engine);
@@ -73,6 +77,9 @@ int doom_engine_world_sprite_remove(DoomEngine *engine, uint32_t token);
 int doom_engine_world_sprites_close(DoomEngine *engine);
 int doom_engine_present(DoomEngine *engine, const uint8_t *rgba, unsigned width,
                         unsigned height, float hud_scale);
+int doom_engine_present_layers(DoomEngine *engine, const uint8_t *weapon,
+                                const uint8_t *status, const uint8_t *message,
+                                float hud_scale, float weapon_scale);
 
 #ifdef __cplusplus
 }

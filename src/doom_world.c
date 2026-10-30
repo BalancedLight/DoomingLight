@@ -232,8 +232,8 @@ static void tick_projectile(DoomWorld *world, DoomProjectile *p, DoomPlayer *pla
     if (p->weapon == DOOM_ROCKET)
         rocket_splash(world, p->position, host);
 }
-void doom_world_tick(DoomWorld *world, DoomPlayer *player, DoomVec3 position, float height,
-                     const DoomWorldHost *host)
+void doom_world_tick_with_pickups(DoomWorld *world, DoomPlayer *player, DoomVec3 position, float height,
+                                  const DoomWorldHost *host, DoomPickupFn pickup, void *context)
 {
     unsigned i;
     if (!world || !player || !host || !valid_vec(position) || !isfinite(height) || height <= 0)
@@ -258,10 +258,26 @@ void doom_world_tick(DoomWorld *world, DoomPlayer *player, DoomVec3 position, fl
         dx = p->position.x - position.x;
         dy = p->position.y - position.y;
         dz = p->position.z - position.z;
-        if (player->health > 0 && fabsf(dx) <= 36 && fabsf(dy) <= 36 && dz >= -8 && dz <= height &&
-            doom_collect(player, p->kind))
-            p->active = 0;
+        if (p->kind >= DOOM_DROP_BULLETS && p->kind <= DOOM_DROP_GREEN_ARMOR &&
+            player->health > 0 && fabsf(dx) <= 36 && fabsf(dy) <= 36 && dz >= -8 && dz <= height)
+        {
+            int before = p->kind <= DOOM_DROP_CELLS ? player->ammo[(int)p->kind] :
+                         p->kind == DOOM_DROP_MEDIKIT ? player->health : player->armor;
+            if (doom_collect(player, p->kind))
+            {
+                int after = p->kind <= DOOM_DROP_CELLS ? player->ammo[(int)p->kind] :
+                            p->kind == DOOM_DROP_MEDIKIT ? player->health : player->armor;
+                p->active = 0;
+                if (pickup)
+                    pickup(context, p->kind, after - before);
+            }
+        }
     }
+}
+void doom_world_tick(DoomWorld *world, DoomPlayer *player, DoomVec3 position, float height,
+                     const DoomWorldHost *host)
+{
+    doom_world_tick_with_pickups(world, player, position, height, host, 0, 0);
 }
 const char *doom_world_pickup_sprite(DoomDrop kind)
 {

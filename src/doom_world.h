@@ -76,6 +76,7 @@ extern "C"
         uint64_t killed[128];
         unsigned killed_next;
     } DoomWorld;
+    typedef void (*DoomPickupFn)(void *context, DoomDrop kind, int amount);
     void doom_world_reset(DoomWorld *world, uint64_t generation);
     int doom_world_fire(DoomWorld *world, DoomWeapon weapon, DoomVec3 origin, DoomVec3 direction);
     int doom_world_enemy_killed(DoomWorld *world, DoomPlayer *player, uint64_t death_id,
@@ -84,6 +85,9 @@ extern "C"
        projectile; it must never pass through geometry on an unknown result. */
     void doom_world_tick(DoomWorld *world, DoomPlayer *player, DoomVec3 player_position,
                          float player_height, const DoomWorldHost *host);
+    void doom_world_tick_with_pickups(DoomWorld *world, DoomPlayer *player, DoomVec3 player_position,
+                                      float player_height, const DoomWorldHost *host,
+                                      DoomPickupFn pickup, void *context);
     const char *doom_world_pickup_sprite(DoomDrop kind);
     const char *doom_world_projectile_sprite(const DoomProjectile *projectile);
 #ifdef __cplusplus

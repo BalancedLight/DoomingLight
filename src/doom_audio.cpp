@@ -15,6 +15,8 @@ struct DoomAudio {
     IXAudio2MasteringVoice *master;
     DoomVoice voices[16];
     DoomVoice music;
+    DoomVoice weapon;
+    unsigned weaponClip;
     bool uninitialize;
     bool paused;
     DWORD comThread;
@@ -42,6 +44,63 @@ extern "C" DoomAudio *doom_audio_create(void) {
 extern "C" void doom_audio_stop_effects(DoomAudio *audio) {
     if (!audio) return;
     for (auto &slot : audio->voices) clear_voice(slot);
+    doom_audio_weapon_stop(audio);
+}
+
+extern "C" void doom_audio_weapon_stop(DoomAudio *audio) {
+    if (!audio) return;
+    clear_voice(audio->weapon);
+    audio->weaponClip = 0;
+}
+
+extern "C" int doom_audio_weapon_volume(DoomAudio *audio, float volume) {
+    if (!audio || !audio->weapon.voice || !(volume >= 0 && volume <= 1)) return 0;
+    return SUCCEEDED(audio->weapon.voice->SetVolume(volume));
+}
+
+static int weapon_pcm(DoomAudio *audio, unsigned clip_id, const int16_t *samples,
+                      size_t count, unsigned rate, float volume, bool loop) {
+    if (!audio || !clip_id || !samples || !count || rate < 1000 || rate > 192000 ||
+        count > static_cast<size_t>(rate) * 60 || !(volume >= 0 && volume <= 1)) return 0;
+    if (audio->weapon.voice && audio->weaponClip == clip_id)
+        return doom_audio_weapon_volume(audio, volume);
+
+    DoomVoice next{};
+    next.samples = static_cast<int16_t *>(std::malloc(count * sizeof(int16_t)));
+    if (!next.samples) return 0;
+    std::memcpy(next.samples, samples, count * sizeof(int16_t));
+    WAVEFORMATEX format{};
+    format.wFormatTag = WAVE_FORMAT_PCM; format.nChannels = 1;
+    format.nSamplesPerSec = rate; format.wBitsPerSample = 16;
+    format.nBlockAlign = 2; format.nAvgBytesPerSec = rate * 2;
+    HRESULT hr = audio->engine->CreateSourceVoice(&next.voice, &format);
+    XAUDIO2_BUFFER buffer{};
+    buffer.Flags = XAUDIO2_END_OF_STREAM;
+    buffer.AudioBytes = static_cast<UINT32>(count * sizeof(int16_t));
+    buffer.pAudioData = reinterpret_cast<const BYTE *>(next.samples);
+    if (loop) buffer.LoopCount = XAUDIO2_LOOP_INFINITE;
+    if (SUCCEEDED(hr)) hr = next.voice->SetVolume(volume);
+    if (SUCCEEDED(hr)) hr = next.voice->SubmitSourceBuffer(&buffer);
+    if (FAILED(hr)) { clear_voice(next); return 0; }
+
+    doom_audio_weapon_stop(audio);
+    hr = next.voice->Start();
+    if (FAILED(hr)) { clear_voice(next); return 0; }
+    audio->weapon = next;
+    audio->weaponClip = clip_id;
+    return 1;
+}
+
+extern "C" int doom_audio_weapon_loop_pcm(DoomAudio *audio, unsigned clip_id,
+                                          const int16_t *samples, size_t count,
+                                          unsigned rate, float volume) {
+    return weapon_pcm(audio, clip_id, samples, count, rate, volume, true);
+}
+
+extern "C" int doom_audio_weapon_once_pcm(DoomAudio *audio, unsigned clip_id,
+                                          const int16_t *samples, size_t count,
+                                          unsigned rate, float volume) {
+    return weapon_pcm(audio, clip_id, samples, count, rate, volume, false);
 }
 
 extern "C" void doom_audio_destroy(DoomAudio *audio) {
@@ -111,6 +170,11 @@ extern "C" int doom_audio_music_pcm(DoomAudio *audio, const int16_t *stereo,
 
 extern "C" void doom_audio_poll(DoomAudio *audio) {
     if (!audio) return;
+    if (audio->weapon.voice) {
+        XAUDIO2_VOICE_STATE state{};
+        audio->weapon.voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+        if (!state.BuffersQueued) doom_audio_weapon_stop(audio);
+    }
     for (auto &slot : audio->voices) if (slot.voice) {
         XAUDIO2_VOICE_STATE state{};
         slot.voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);

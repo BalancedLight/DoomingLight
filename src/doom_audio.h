@@ -11,6 +11,15 @@ void doom_audio_destroy(DoomAudio *audio);
 /* Copies mono PCM before returning. Limit each sound to 60 seconds. */
 int doom_audio_play_pcm(DoomAudio *audio, const int16_t *samples,
                         size_t count, unsigned sample_rate, float volume);
+/* One looping weapon sound at a time. Repeating a clip ID only changes volume. */
+int doom_audio_weapon_loop_pcm(DoomAudio *audio, unsigned clip_id,
+                               const int16_t *samples, size_t count,
+                               unsigned sample_rate, float volume);
+int doom_audio_weapon_once_pcm(DoomAudio *audio, unsigned clip_id,
+                               const int16_t *samples, size_t count,
+                               unsigned sample_rate, float volume);
+void doom_audio_weapon_stop(DoomAudio *audio);
+int doom_audio_weapon_volume(DoomAudio *audio, float volume);
 void doom_audio_poll(DoomAudio *audio);
 void doom_audio_stop_effects(DoomAudio *audio);
 /* Replaces the current looping track only after the new voice is ready. */

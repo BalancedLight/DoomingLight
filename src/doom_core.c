@@ -254,6 +254,7 @@ static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)
         p->plasma_recovery = 0;
         p->attack_down = 0;
         p->refire = 0;
+        p->face_attack_tics = 0;
         if (p->view_height > 6)
             --p->view_height;
         if (p->weapon_y < 128)
@@ -267,30 +268,36 @@ static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)
     if (p->invulnerability_tics)
         --p->invulnerability_tics;
     update_flash(p);
-    if (p->god || p->invulnerability_tics)
-    {
-        p->face_index = 40;
+    p->face_random = (p->face_random + 1u) & 255u;
+    if (fire) {
+        if (p->face_attack_tics < 71) ++p->face_attack_tics;
+    } else p->face_attack_tics = 0;
+    if (p->face_tics) --p->face_tics;
+    if (p->face == 1 && p->face_tics) {
+        /* Damage expressions take priority over firing and god mode. */
+    } else {
         p->face = 0;
-    }
-    else if (p->face_tics && --p->face_tics == 0)
-    {
-        p->face = 0;
-        p->face_index = pain_base(p);
-    }
-    else if (!p->face_tics)
-    {
-        p->face_random = (p->face_random + 1u) & 255u;
-        p->face_index = pain_base(p) + random_table[p->face_random] % 3;
-        p->face_tics = 17;
+        if (p->face_attack_tics > 70) {
+            p->face_index = pain_base(p) + 7;
+            p->face_tics = 1;
+        } else if (p->god || p->invulnerability_tics) {
+            p->face_index = 40;
+            p->face_tics = 0;
+        } else if (!p->face_tics) {
+            p->face_index = pain_base(p) + random_table[p->face_random] % 3;
+            p->face_tics = 17;
+        }
     }
     if (p->switch_phase == 1)
     {
+        if (p->weapon == DOOM_CHAINSAW) p->weapon_frame = 2;
         p->weapon_y += 6;
         if (p->weapon_y >= 128)
         {
             p->weapon_y = 128;
             if (available(p, p->pending_weapon))
                 p->weapon = p->pending_weapon;
+            p->weapon_frame = p->weapon == DOOM_CHAINSAW ? 2 : 0;
             p->pending_weapon = -1;
             p->switch_phase = 2;
             p->refire = 0;
@@ -345,7 +352,7 @@ static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)
             {1, 2, 3, 2, 1, 0, 0, 0, 0, 0}, {0, 1, 2, 1, 0, 0, 0, 0, 0, 0},
             {0, 0, 1, 2, 3, 2, 1, 0, 0, 0}, {0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
             {1, 1, 0, 0, 0, 0, 0, 0, 0, 0}, {0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
-            {0, 1, 1, 1, 0, 0, 0, 0, 0, 0}, {2, 3, 0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 1, 1, 1, 0, 0, 0, 0, 0, 0}, {0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
             {0, 0, 1, 2, 3, 4, 5, 6, 7, 0}};
         static const unsigned char times[DOOM_WEAPON_COUNT][10] = {
             {4, 4, 5, 4, 5, 0, 0, 0, 0, 0},     {4, 6, 4, 5, 0, 0, 0, 0, 0, 0},
@@ -374,6 +381,7 @@ static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)
             return;
         }
         p->plasma_recovery = 0;
+        p->weapon_frame = 0;
         if (p->weapon == DOOM_CHAINSAW && !fire && !p->switch_phase)
         {
             if (!p->saw_idle_tics)
@@ -381,11 +389,11 @@ static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)
                 send(emit, ctx, DOOM_EVENT_SOUND, DOOM_SOUND_SAWIDL, p->weapon, 0, 0, 0);
                 p->saw_idle_tics = 8;
             }
+            p->weapon_frame = 2 + (int)((8 - p->saw_idle_tics) / 4);
             --p->saw_idle_tics;
         }
         else
             p->saw_idle_tics = 0;
-        p->weapon_frame = 0;
         p->shot_fired = 0;
         if (fire && p->pending_weapon < 0 && !available(p, p->weapon))
         {
@@ -406,12 +414,14 @@ static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)
             p->weapon != p->pending_weapon)
         {
             p->switch_phase = 1;
+            if (p->weapon == DOOM_CHAINSAW) p->weapon_frame = 2;
             p->attack_down = !!fire;
             return;
         }
         p->pending_weapon = -1;
         if (fire && available(p, p->weapon))
         {
+            if (p->weapon == DOOM_CHAINSAW) p->weapon_frame = 0;
             p->fire_delay = delay[p->weapon];
             p->cooldown = duration[p->weapon];
             p->shot_fired = 0;

@@ -25,7 +25,6 @@ extern "C"
            rejected without ammo use, and world objects are not advanced. */
         int fire, projectile_supported, world_active;
     } DoomWorldFrame;
-    typedef void (*DoomPickupFn)(void *context, DoomDrop kind);
     void doom_world_runtime_reset(DoomWorldRuntime *runtime, uint64_t generation);
     int doom_world_runtime_death(DoomWorldRuntime *runtime, DoomPlayer *player, uint64_t death_id,
                                  DoomVec3 position);

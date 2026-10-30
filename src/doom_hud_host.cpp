@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 
 /* Dynamic texture route derived from DLUMA's Workshop preview adapter. */
 namespace {
@@ -88,9 +89,15 @@ bool mount_pack() {
     mounted_pack = file; return true;
 }
 }
+struct HudTexture {
+    void *texture; uint8_t *pixels, *last_frame;
+    unsigned width, height, backing_width, backing_height, viewport_width, viewport_height, source_height;
+    int origin_x, origin_y; float scale; bool registered, ready, has_frame;
+    char actual_name[128], alias[64];
+};
 struct DoomHudHost {
-    void *level, *image, *texture; uint32_t generation; bool registered, bound, alias_ready;
-    char actual_name[128]; uint8_t *pixels;
+    void *level, *image; uint32_t generation; bool bound;
+    HudTexture current, pending, retiring; ULONGLONG next_texture_attempt;
     Create create; Update update; Unload unload; LoadUi load_ui; UnloadUi unload_ui;
     IsLoaded loaded; SetTexture set_texture;
     int screen_id; Show show; Hide hide; Unregister unregister; bool owns_screen, shown;
@@ -100,6 +107,7 @@ struct DoomHudHost {
     Lookup lookup; IsVisible is_visible; SetVisible set_visible;
     void *stock_root; void *stock_elements[8]; bool stock_owned[8];
     void *death_root, *death_elements[5]; bool death_owned[5];
+    DoomHudHost *layers[2]; unsigned layer_kind; bool split_layers, inside_layered_update;
 };
 static const char *const stock_ids[8] = {"HudHealthIndicator", "HudStamina", "HudRadar", "HudPrimaryWeaponIndicator", "HudSecondaryWeaponIndicator", "HudWeaponSelection", "HudCrosshair", "HudReloadNotify"};
 static void *find_stock_root(DoomHudHost *h) {
@@ -170,7 +178,119 @@ static bool refresh_screen(DoomHudHost *h) {
     void *image = h->find_element(root, &id, 1);
     if (!image) { h->root = root; h->image = nullptr; h->bound = false; return false; }
     if (h->root != root || h->image != image) { h->root = root; h->image = image; h->bound = false; h->shown = false; h->scale = 0; }
+    static const char *const ids[2] = {"I_DLUMAStatusBar", "I_DLUMAMessage"};
+    for (unsigned i = 0; i < 2; ++i) if (h->layers[i]) {
+        TtlString layer_id = str(ids[i]);
+        void *child = h->find_element(root, &layer_id, 1);
+        if (!child || h->get_owner(child) != owner) return false;
+        if (h->layers[i]->image != child) {
+            h->layers[i]->image = child; h->layers[i]->bound = false;
+            h->layers[i]->shown = false; h->layers[i]->scale = 0;
+        }
+    }
     return true;
+}
+static bool release_texture(DoomHudHost *h, HudTexture *slot, bool level_valid) {
+    if (slot->registered) {
+        if (!level_valid) return false;
+        TtlString alias = str(slot->alias);
+        /* UnloadUITexture returns the number of outstanding UI references.
+         * Keep the texture alive until the image releases its old alias. */
+        if (h->unload_ui(h->level, &alias) != 0) return false;
+        slot->registered = false;
+    }
+    if (slot->texture) (void)h->unload(nullptr, slot->texture);
+    free(slot->pixels); free(slot->last_frame);
+    std::memset(slot, 0, sizeof(*slot));
+    return true;
+}
+static bool physical_texture_fits(unsigned width, unsigned height) {
+    if (!width || !height || width > 8192 || height > 8192) return false;
+    unsigned backing_width = 1, backing_height = 1;
+    while (backing_width < width) backing_width *= 2;
+    while (backing_height < height) backing_height *= 2;
+    return static_cast<size_t>(backing_width) * backing_height <= (64u * 1024u * 1024u) / 4;
+}
+static bool create_texture(DoomHudHost *h, HudTexture *slot, unsigned width, unsigned height, unsigned source_height) {
+    static volatile LONG serial = 0;
+    constexpr size_t MaxBytes = 64u * 1024u * 1024u;
+    if (!width || !height || width > 8192 || height > 8192 ||
+        static_cast<size_t>(width) * height > MaxBytes / 4) return false;
+    unsigned backing_width = 1, backing_height = 1;
+    while (backing_width < width) backing_width *= 2;
+    while (backing_height < height) backing_height *= 2;
+    if (static_cast<size_t>(backing_width) * backing_height > MaxBytes / 4) return false;
+    const size_t bytes = static_cast<size_t>(backing_width) * backing_height * 4;
+    slot->pixels = static_cast<uint8_t *>(calloc(bytes, 1));
+    slot->last_frame = static_cast<uint8_t *>(malloc(320u * source_height * 4u));
+    if (!slot->pixels || !slot->last_frame) { release_texture(h, slot, true); return false; }
+    const unsigned sequence = static_cast<unsigned>(InterlockedIncrement(&serial));
+    char name_buffer[64];
+    std::snprintf(name_buffer, sizeof(name_buffer), "dluma_doom_hud_%u", sequence);
+    std::snprintf(slot->alias, sizeof(slot->alias), "dluma_doom_hud_ui_%u", sequence);
+    TtlString name = str(name_buffer);
+    slot->texture = h->create(nullptr, &name, static_cast<int>(backing_width), static_cast<int>(backing_height), 1, 0, 2);
+    if (!slot->texture) { release_texture(h, slot, true); return false; }
+    const char *actual = *reinterpret_cast<const char **>(static_cast<unsigned char *>(slot->texture) + 0x60);
+    size_t i = 0;
+    if (actual) for (; i + 1 < sizeof(slot->actual_name) && actual[i]; ++i) slot->actual_name[i] = actual[i];
+    if (!i || i + 1 == sizeof(slot->actual_name) || std::strncmp(slot->actual_name, name_buffer, std::strlen(name_buffer))) {
+        release_texture(h, slot, true); return false;
+    }
+    slot->width = width; slot->height = height; slot->source_height = source_height;
+    slot->backing_width = backing_width; slot->backing_height = backing_height;
+    return true;
+}
+/* Expand to one texel per output pixel. A 1:1 image avoids sampling between
+ * adjacent Doom pixels even when the game's UI sampler is linear. */
+static void expand_frame(HudTexture *slot, const uint8_t *rgba, float scale,
+                         unsigned viewport_width, unsigned viewport_height, int origin_x, int origin_y,
+                         int canvas_left, int canvas_top, int canvas_width, int canvas_height,
+                         bool physical_size) {
+    const int width = static_cast<int>(slot->width), height = static_cast<int>(slot->height);
+    const int stride = static_cast<int>(slot->backing_width);
+    if (!physical_size) {
+        for (unsigned y = 0; y < slot->source_height; ++y)
+            std::memcpy(slot->pixels + static_cast<size_t>(y) * stride * 4,
+                        rgba + static_cast<size_t>(y) * 320 * 4, 320u * 4u);
+        std::memcpy(slot->last_frame, rgba, 320u * slot->source_height * 4u);
+        slot->scale = scale; slot->has_frame = true;
+        slot->viewport_width = viewport_width; slot->viewport_height = viewport_height;
+        slot->origin_x = origin_x; slot->origin_y = origin_y;
+        return;
+    }
+    const int left = canvas_left - origin_x, top = canvas_top - origin_y;
+    const int clip_left = left < 0 ? 0 : left;
+    const int clip_right = left + canvas_width > width ? width : left + canvas_width;
+    int previous_source_y = -1;
+    for (int y = 0; y < height; ++y) {
+        uint8_t *row = slot->pixels + static_cast<size_t>(y) * stride * 4;
+        if (y < top || y >= top + canvas_height || clip_left >= clip_right) {
+            std::memset(row, 0, static_cast<size_t>(width) * 4); previous_source_y = -1; continue;
+        }
+        const int source_y = static_cast<int>((static_cast<int64_t>(y - top) * slot->source_height) / canvas_height);
+        if (source_y == previous_source_y) {
+            std::memcpy(row, row - static_cast<size_t>(stride) * 4, static_cast<size_t>(width) * 4);
+            continue;
+        }
+        previous_source_y = source_y;
+        std::memset(row, 0, static_cast<size_t>(width) * 4);
+        auto *out = reinterpret_cast<uint32_t *>(row);
+        for (int x = 0; x < 320; ++x) {
+            int begin = left + static_cast<int>((static_cast<int64_t>(x) * canvas_width + 319) / 320);
+            int end = left + static_cast<int>((static_cast<int64_t>(x + 1) * canvas_width + 319) / 320);
+            if (begin < clip_left) begin = clip_left;
+            if (end > clip_right) end = clip_right;
+            if (begin >= end) continue;
+            uint32_t pixel;
+            std::memcpy(&pixel, rgba + (static_cast<size_t>(source_y) * 320 + x) * 4, 4);
+            for (int target = begin; target < end; ++target) out[target] = pixel;
+        }
+    }
+    std::memcpy(slot->last_frame, rgba, 320u * slot->source_height * 4u);
+    slot->scale = scale; slot->has_frame = true;
+    slot->viewport_width = viewport_width; slot->viewport_height = viewport_height;
+    slot->origin_x = origin_x; slot->origin_y = origin_y;
 }
 extern "C" DoomHudHost *doom_hud_host_open(void *level, uint32_t generation) {
     HMODULE engine = GetModuleHandleW(L"engine_x64_rwdi.dll");
@@ -244,18 +364,8 @@ extern "C" DoomHudHost *doom_hud_host_create(void *level, void *image, uint32_t 
     h->position = reinterpret_cast<SetPos>(GetProcAddress(engine, "?SetRelativePos@IUIElement@@QEAAXAEBVvec3@@@Z"));
     h->width = reinterpret_cast<SetSize>(GetProcAddress(engine, "?SetSizeX@IUIElement@@QEAAXM@Z"));
     h->height = reinterpret_cast<SetSize>(GetProcAddress(engine, "?SetSizeY@IUIElement@@QEAAXM@Z"));
-    h->pixels = static_cast<uint8_t *>(calloc(512u * 512u, 4));
-    if (!h->pixels || !h->load_ui || !h->unload_ui || !h->loaded || !h->set_texture || !h->position || !h->width || !h->height) { free(h->pixels); free(h); return nullptr; }
-    __try {
-        TtlString name = str("dluma_doom_hud");
-        h->texture = h->create(nullptr, &name, 512, 512, 1, 0, 2);
-        if (h->texture) {
-            const char *actual = *reinterpret_cast<const char **>(static_cast<unsigned char *>(h->texture) + 0x60);
-            size_t i = 0; if (actual) { for (; i + 1 < sizeof(h->actual_name) && actual[i]; ++i) h->actual_name[i] = actual[i]; }
-            if (!i || i + 1 == sizeof(h->actual_name) || strncmp(h->actual_name, "dluma_doom_hud", 14)) h->actual_name[0] = 0;
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) { h->actual_name[0] = 0; }
-    if (!h->texture || !h->actual_name[0]) { doom_hud_host_destroy(h, level, generation); return nullptr; }
+    h->set_visible = reinterpret_cast<SetVisible>(GetProcAddress(engine, "?SetVisible@IUIElement@@QEAAX_N@Z"));
+    if (!h->load_ui || !h->unload_ui || !h->loaded || !h->set_texture || !h->position || !h->width || !h->height || !h->set_visible) { free(h); return nullptr; }
     return h;
 }
 extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, uint32_t generation, const uint8_t *rgba, float scale) {
@@ -263,6 +373,12 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
     __try {
         if (h->owns_screen && !refresh_screen(h)) return 0;
         if (!h->image || (image && image != h->image)) return 0;
+        if (h->owns_screen && h->split_layers && !h->inside_layered_update) {
+            for (unsigned i = 0; i < 2; ++i) if (h->layers[i] && h->layers[i]->image) {
+                h->set_visible(h->layers[i]->image, 0); h->layers[i]->shown = false;
+            }
+            h->split_layers = false;
+        }
         image = h->image;
         HWND window = GetForegroundWindow(); DWORD pid = 0; RECT rect;
         if (window) window = GetAncestor(window, GA_ROOT);
@@ -270,23 +386,109 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
             !GetClientRect(window, &rect) || rect.right <= rect.left || rect.bottom <= rect.top) return 0;
         if (!(scale >= 0.5f && scale <= 2.0f)) return 0;
         const LONG client_width = rect.right - rect.left, client_height = rect.bottom - rect.top;
-        if (scale != h->scale || client_width != h->client_width || client_height != h->client_height) {
-            const float height = (float)client_height * scale, width = height * (4.0f / 3.0f);
-            Vec3 position = {((float)client_width - width) * 0.5f, (float)client_height - height, 0.0f};
-            h->width(image, width); h->height(image, height); h->position(image, &position);
+        const unsigned source_height = h->layer_kind == 1 ? 32u : h->layer_kind == 2 ? 16u : 200u;
+        const int full_height = static_cast<int>(client_height * scale + 0.5f);
+        const int canvas_width = (full_height * 4 + 1) / 3;
+        const int canvas_height = (full_height * static_cast<int>(source_height) + 100) / 200;
+        const int canvas_left = h->layer_kind == 2 ? 0 : (client_width - canvas_width) / 2;
+        const int canvas_top = h->layer_kind == 2 ? 0 : client_height - canvas_height;
+        int origin_x = canvas_left < 0 ? 0 : canvas_left;
+        int origin_y = canvas_top < 0 ? 0 : canvas_top;
+        const int right = canvas_left + canvas_width > client_width ? client_width : canvas_left + canvas_width;
+        const int bottom = canvas_top + canvas_height > client_height ? client_height : canvas_top + canvas_height;
+        if (right <= origin_x || bottom <= origin_y) return 0;
+        const unsigned visible_width = static_cast<unsigned>(right - origin_x), visible_height = static_cast<unsigned>(bottom - origin_y);
+        const bool physical_size = physical_texture_fits(visible_width, visible_height);
+        const unsigned draw_width = physical_size ? visible_width : 320u, draw_height = physical_size ? visible_height : source_height;
+        if (!physical_size) { origin_x = canvas_left; origin_y = canvas_top; }
+        if (h->retiring.texture) (void)release_texture(h, &h->retiring, true);
+        HudTexture *slot = &h->current;
+        if (!slot->texture || slot->width != draw_width || slot->height != draw_height || slot->source_height != source_height) {
+            slot = &h->pending;
+            if (slot->texture && (slot->width != draw_width || slot->height != draw_height || slot->source_height != source_height) &&
+                !release_texture(h, slot, true)) return h->bound ? 1 : 0;
+            if (!slot->texture) {
+                if (GetTickCount64() < h->next_texture_attempt) return h->bound ? 1 : 0;
+                if (!create_texture(h, slot, draw_width, draw_height, source_height)) {
+                    h->next_texture_attempt = GetTickCount64() + 5000;
+                    return h->bound ? 1 : 0;
+                }
+                h->next_texture_attempt = 0;
+            }
+        }
+        if (!slot->has_frame || slot->scale != scale ||
+            slot->viewport_width != static_cast<unsigned>(client_width) ||
+            slot->viewport_height != static_cast<unsigned>(client_height) ||
+            slot->origin_x != origin_x || slot->origin_y != origin_y ||
+            std::memcmp(slot->last_frame, rgba, 320u * source_height * 4u)) {
+            expand_frame(slot, rgba, scale, static_cast<unsigned>(client_width),
+                         static_cast<unsigned>(client_height), origin_x, origin_y,
+                         canvas_left, canvas_top, canvas_width, canvas_height, physical_size);
+            h->update(nullptr, slot->texture, slot->pixels, 0, 0, 0, 0, slot->backing_width,
+                      slot->backing_height, slot->backing_width * 4, 32);
+        }
+        TtlString alias = str(slot->alias), actual = str(slot->actual_name), material = {};
+        if (slot->registered && slot->ready && !h->loaded(level, &alias)) {
+            slot->registered = false; slot->ready = false;
+            if (slot == &h->current) h->bound = false;
+        }
+        if (!slot->registered) {
+            h->load_ui(level, &alias, &actual, static_cast<int>(slot->backing_width),
+                       static_cast<int>(slot->backing_height), 0, 0,
+                       static_cast<int>(slot->width), static_cast<int>(slot->height), 0, 0, 0, &material);
+            slot->registered = true;
+        }
+        if (!h->loaded(level, &alias)) return h->bound ? 1 : 0;
+        slot->ready = true;
+        if (slot == &h->pending) {
+            if (h->retiring.texture && !release_texture(h, &h->retiring, true))
+                return h->bound ? 1 : 0;
+            if (!h->set_texture(image, &alias)) return h->bound ? 1 : 0;
+            h->retiring = h->current;
+            h->current = h->pending; std::memset(&h->pending, 0, sizeof(h->pending));
+            if (h->retiring.texture) (void)release_texture(h, &h->retiring, true);
+            h->bound = true;
+            hud_trace("Doom HUD: texture bound\n");
+        } else if (!h->bound) {
+            h->bound = h->set_texture(image, &alias) != 0;
+        }
+        if (h->bound && (scale != h->scale || client_width != h->client_width || client_height != h->client_height)) {
+            Vec3 position = {static_cast<float>(origin_x), static_cast<float>(origin_y), 0.0f};
+            h->width(image, static_cast<float>(physical_size ? draw_width : canvas_width));
+            h->height(image, static_cast<float>(physical_size ? draw_height : canvas_height));
+            h->position(image, &position);
             h->scale = scale; h->client_width = client_width; h->client_height = client_height;
         }
-        for (unsigned y = 0; y < 200; ++y) memcpy(h->pixels + y * 512u * 4, rgba + y * 320u * 4, 320u * 4);
-        h->update(nullptr, h->texture, h->pixels, 0, 0, 0, 0, 512, 512, 2048, 32);
-        TtlString alias = str("dluma_doom_hud_ui"), actual = str(h->actual_name), material = {};
-        if (h->registered && h->alias_ready && !h->loaded(level, &alias)) { h->registered = false; h->alias_ready = false; h->bound = false; }
-        if (!h->registered) { h->load_ui(level, &alias, &actual, 512, 512, 0, 0, 320, 200, 0, 0, 0, &material); h->registered = true; }
-        if (!h->loaded(level, &alias)) return 0;
-        h->alias_ready = true;
-        if (!h->bound) { h->bound = h->set_texture(image, &alias) != 0; if (h->bound) hud_trace("Doom HUD: texture bound\n"); }
-        if (h->bound && h->owns_screen && !h->shown) { h->set_visible(image, 1); h->show(level, h->screen_id, nullptr); h->shown = true; }
-        if (h->bound && h->shown) stock_visibility(h, true);
+        if (h->bound && !h->shown) { h->set_visible(image, 1); if (h->owns_screen) h->show(level, h->screen_id, nullptr); h->shown = true; }
+        if (h->owns_screen && h->bound && h->shown && (!h->split_layers || (h->layers[0] && h->layers[0]->bound))) stock_visibility(h, true);
         return h->bound ? 1 : 0;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+extern "C" int doom_hud_host_update_layers(DoomHudHost *h, void *level, uint32_t generation,
+                                             const uint8_t *weapon, const uint8_t *status,
+                                             const uint8_t *message, float hud_scale, float weapon_scale) {
+    if (!h || !h->owns_screen || !weapon || !status || !message ||
+        level != h->level || generation != h->generation) return 0;
+    __try {
+        if (!refresh_screen(h)) return 0;
+        void *owner = h->get_owner(h->root);
+        static const char *const ids[2] = {"I_DLUMAStatusBar", "I_DLUMAMessage"};
+        h->split_layers = true;
+        for (unsigned i = 0; i < 2; ++i) if (!h->layers[i]) {
+            TtlString id = str(ids[i]);
+            void *image = h->find_element(h->root, &id, 1);
+            if (!image || !owner || h->get_owner(image) != owner) return 0;
+            h->layers[i] = doom_hud_host_create(level, image, generation);
+            if (!h->layers[i]) return 0;
+            h->layers[i]->layer_kind = i + 1;
+        }
+        h->inside_layered_update = true;
+        const int weapon_ready = doom_hud_host_update(h, level, nullptr, generation, weapon, weapon_scale);
+        h->inside_layered_update = false;
+        const int status_ready = doom_hud_host_update(h->layers[0], level, nullptr, generation, status, hud_scale);
+        const int message_ready = doom_hud_host_update(h->layers[1], level, nullptr, generation, message, 1.0f);
+        stock_visibility(h, weapon_ready && status_ready && h->shown);
+        return weapon_ready && status_ready && message_ready;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 extern "C" void doom_hud_host_destroy(DoomHudHost *h, void *level, uint32_t generation) {
@@ -296,11 +498,22 @@ extern "C" void doom_hud_host_destroy(DoomHudHost *h, void *level, uint32_t gene
             if (h->owns_screen) death_visibility(h, false);
             if (h->owns_screen) stock_visibility(h, false);
             if (h->owns_screen && refresh_screen(h)) { if (h->shown) h->hide(level, h->screen_id); (void)h->unregister(level, h->screen_id); }
-            if (h->registered) { TtlString alias = str("dluma_doom_hud_ui"); (void)h->unload_ui(level, &alias); }
+            for (unsigned i = 0; i < 2; ++i) if (h->layers[i]) {
+                doom_hud_host_destroy(h->layers[i], level, generation); h->layers[i] = nullptr;
+            }
+            release_texture(h, &h->pending, true);
+            release_texture(h, &h->current, true);
+            release_texture(h, &h->retiring, true);
+        } else {
+            for (unsigned i = 0; i < 2; ++i) if (h->layers[i]) {
+                doom_hud_host_destroy(h->layers[i], level, generation); h->layers[i] = nullptr;
+            }
+            release_texture(h, &h->pending, false);
+            release_texture(h, &h->current, false);
+            release_texture(h, &h->retiring, false);
         }
-        if (h->texture) (void)h->unload(nullptr, h->texture);
     } __except(EXCEPTION_EXECUTE_HANDLER) {}
-    free(h->pixels); free(h);
+    free(h);
 }
 extern "C" void doom_hud_host_hide(DoomHudHost *h, void *level, uint32_t generation) {
     if (!h || level != h->level || generation != h->generation || !h->shown || !h->owns_screen) return;

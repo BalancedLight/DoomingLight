@@ -4,8 +4,9 @@
 #include <assert.h>
 #include <string.h>
 static int damage_calls, damage_total, fail_sweep, aim_calls, pickup_calls, sprite_calls;
-static void pickup(void *context, DoomDrop kind)
-{ (void)context; (void)kind; ++pickup_calls; }
+static int pickup_amount;
+static void pickup(void *context, DoomDrop kind, int amount)
+{ (void)context; (void)kind; ++pickup_calls; pickup_amount = amount; }
 static int sprite(void *context, DoomSpriteKind kind, const char *lump, DoomVec3 position)
 { (void)context; (void)kind; (void)position; assert(lump && *lump); ++sprite_calls; return 1; }
 static int sweep(void *context, DoomVec3 from, DoomVec3 to, float radius, DoomTrace *out)
@@ -114,6 +115,17 @@ int main(void)
     assert(doom_world_runtime_death(&runtime, &player, 2, start));
     doom_world_runtime_advance(&runtime, &player, 29, &frame, 0, pickup, 0);
     assert(pickup_calls == 1 && player.ammo[DOOM_BULLETS] == 10);
+    player.ammo[DOOM_BULLETS] = player.max_ammo[DOOM_BULLETS] - 3;
+    runtime.world.pickups[0].active = 1;
+    runtime.world.pickups[0].kind = DOOM_DROP_BULLETS;
+    runtime.world.pickups[0].position = start;
+    runtime.world.pickups[0].age = 0;
+    doom_world_runtime_advance(&runtime, &player, 29, &frame, 0, pickup, 0);
+    assert(pickup_calls == 2 && pickup_amount == 3);
+    runtime.world.pickups[0].active = 1;
+    runtime.world.pickups[0].age = 35u * 60u;
+    doom_world_runtime_advance(&runtime, &player, 29, &frame, 0, pickup, 0);
+    assert(!runtime.world.pickups[0].active && pickup_calls == 2);
     doom_world_runtime_reset(&runtime, 11);
     doom_reset(&player, 1);
     player.weapon = DOOM_ROCKET;

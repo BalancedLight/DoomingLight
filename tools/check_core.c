@@ -55,6 +55,46 @@ int main(void)
     assert(attacks == 1 && player.ammo[0] == 199);
     assert(player.flash_weapon == DOOM_CHAINGUN && player.flash_tics == 5);
 
+    /* The chainsaw's idle C/D frames and attack A/B frames each last four tics. */
+    doom_reset(&player, 1);
+    player.weapon = DOOM_CHAINSAW;
+    attacks = 0;
+    for (i = 0; i < 4; ++i) { doom_tick(&player, 0, collect_event, 0); assert(player.weapon_frame == 2); }
+    for (i = 0; i < 4; ++i) { doom_tick(&player, 0, collect_event, 0); assert(player.weapon_frame == 3); }
+    doom_tick(&player, 1, collect_event, 0);
+    assert(player.weapon_frame == 0 && attacks == 1);
+    for (i = 0; i < 3; ++i) { doom_tick(&player, 1, collect_event, 0); assert(player.weapon_frame == 0); }
+    doom_tick(&player, 1, collect_event, 0);
+    assert(player.weapon_frame == 1 && attacks == 2);
+    for (i = 0; i < 3; ++i) { doom_tick(&player, 0, collect_event, 0); assert(player.weapon_frame == 1); }
+    doom_tick(&player, 0, collect_event, 0);
+    assert(player.weapon_frame == 2);
+    doom_reset(&player, 1);
+    attacks = 0;
+    doom_select_weapon(&player, DOOM_CHAINSAW);
+    for (i = 0; i < 40; ++i) doom_tick(&player, 0, collect_event, 0);
+    assert(player.weapon == DOOM_CHAINSAW && (player.weapon_frame == 2 || player.weapon_frame == 3));
+    assert(attacks == 0);
+
+    /* Idle faces never insert an extra straight frame; sustained fire ramps
+       up after two seconds and damage expressions retain priority. */
+    doom_reset(&player, 1);
+    player.face_index = 2; player.face_tics = 1;
+    doom_tick(&player, 0, collect_event, 0);
+    assert(player.face_tics == 17 && player.face_index >= 0 && player.face_index <= 2);
+    for (i = 0; i < 70; ++i) doom_tick(&player, 1, collect_event, 0);
+    assert(player.face_index != 7);
+    doom_tick(&player, 1, collect_event, 0);
+    assert(player.face_index == 7);
+    doom_damage_from(&player, 5, -1);
+    assert(player.face_index == 4);
+    doom_tick(&player, 1, collect_event, 0);
+    assert(player.face_index == 4);
+    for (i = 0; i < 34; ++i) doom_tick(&player, 1, collect_event, 0);
+    assert(player.face_index == 7);
+    doom_tick(&player, 0, collect_event, 0);
+    assert(player.face_index < 3);
+
     doom_reset(&player, 1);
     player.weapon = DOOM_SUPER_SHOTGUN;
     attacks = spread_seen = 0;
@@ -70,6 +110,15 @@ int main(void)
     assert(attacks == 3 && player.ammo[DOOM_CELLS] == 297);
     doom_advance(&player, 100, 0, collect_event, 0);
     assert(player.plasma_recovery);
+
+    doom_reset(&player, 1);
+    player.weapon = DOOM_BFG;
+    for (i = 0; i < 32; ++i) doom_tick(&player, 1, collect_event, 0);
+    assert(player.ammo[DOOM_CELLS] == 260 && player.ammo[DOOM_ROCKETS] == 50);
+    doom_reset(&player, 1);
+    player.weapon = DOOM_ROCKET;
+    for (i = 0; i < 10; ++i) doom_tick(&player, 1, collect_event, 0);
+    assert(player.ammo[DOOM_CELLS] == 300 && player.ammo[DOOM_ROCKETS] == 49);
 
     doom_reset(&player, 1);
     player.kills = 4;

@@ -1,5 +1,6 @@
 #include "doom_combat.h"
 #include "doom_hostility.h"
+#include "doom_hit_geometry.h"
 #include <windows.h>
 #include <array>
 #include <cmath>
@@ -9,6 +10,7 @@
 
 namespace {
 struct Vec3 { float x, y, z; };
+constexpr float HostDamagePerDoomUnit = 12.0f;
 using GetVector = Vec3 *(__fastcall *)(void *, Vec3 *);
 using GetBounds = const float *(__fastcall *)(void *);
 using GetLevel = void *(__fastcall *)(void *);
@@ -23,6 +25,7 @@ struct NativeVector { void **data; uint32_t size, capacity, allocator_tag; };
 struct Bounds { Vec3 center, half; };
 using FindObjects = bool (__fastcall *)(void *, NativeVector *, const Bounds *, const void *, bool, int *);
 using NativeFree = void (__cdecl *)(void *);
+using GetControlParent = void *(__fastcall *)(void *);
 bool valid(Vec3 a) { return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z); }
 void trace_hitscan(const char *message) {
 #if defined(DOOM_MODE_LAB)
@@ -41,6 +44,9 @@ Vec3 unit(Vec3 a) {
 }
 struct DoomCombat {
     const char *last_reason = "not_attempted";
+    DoomDamageObservation observation{};
+    std::array<DoomDamageObservation,64> observations{};
+    unsigned observation_head=0, observation_count=0;
     unsigned char *game = nullptr;
     HMODULE engine = nullptr;
     GetVector camera_position = nullptr, camera_forward = nullptr, camera_up = nullptr;
@@ -54,6 +60,7 @@ struct DoomCombat {
     GetBounds object_bounds = nullptr;
     FindObjects find_objects = nullptr;
     NativeFree native_free = nullptr;
+    GetControlParent get_parent = nullptr;
     void *world_player = nullptr, *world_level = nullptr;
     uint32_t world_generation = 0, world_epoch = 0;
     unsigned world_trace_budget = 0;
@@ -61,6 +68,12 @@ struct DoomCombat {
     Vec3 world_last_point{}, world_last_direction{};
     int world_last_mesh = -1;
     float world_damage_scale = 1.0f;
+    std::array<DoomTarget,DOOM_WORLD_MAX_SPLASH_TARGETS> actor_cache{};
+    Vec3 actor_cache_center{};
+    float actor_cache_radius = 0;
+    unsigned actor_cache_count = 0;
+    unsigned actor_boxes_tested = 0, actor_boxes_hit = 0;
+    bool actor_cache_valid = false;
 };
 extern "C" DoomCombat *doom_combat_create(void *game_module, void *engine_module) {
     if (!game_module || !engine_module) return nullptr;
@@ -88,6 +101,7 @@ extern "C" DoomCombat *doom_combat_create(void *game_module, void *engine_module
     c->give_damage=reinterpret_cast<GiveDamage>(game+0xB19F60);
     c->object_position=reinterpret_cast<GetVector>(GetProcAddress(engine,"?GetWorldPosition@IControlObject@@QEBA?AVvec3@@XZ"));
     c->object_bounds=reinterpret_cast<GetBounds>(GetProcAddress(engine,"?GetExtentsInWorld@IControlObject@@QEBAAEBVextents@@XZ"));
+    c->get_parent=reinterpret_cast<GetControlParent>(GetProcAddress(engine,"?GetParent@IControlObject@@QEBAPEAV1@XZ"));
     void *find_address=reinterpret_cast<void *>(GetProcAddress(engine,"?FindObjectsInExtents@ILevel@@QEAA_NPEAV?$vector@PEAVIControlObject@@@ttl@@AEBVaabb@@PEBVCRTTI@@_NPEAH@Z"));
     static const unsigned char find_prefix[] = {0x48,0x8b,0xc4,0x48,0x89,0x58,0x08,0x48,0x89,0x70,0x10,0x48,0x89,0x78,0x18,0x4c};
     HMODULE native_crt=GetModuleHandleW(L"MSVCR100.dll");
@@ -102,6 +116,85 @@ extern "C" DoomCombat *doom_combat_create(void *game_module, void *engine_module
 extern "C" void doom_combat_destroy(DoomCombat *combat) { delete combat; }
 extern "C" const char *doom_combat_last_reason(const DoomCombat *combat) {
     return combat ? combat->last_reason : "combat_missing";
+}
+extern "C" unsigned doom_combat_actor_count(const DoomCombat *c) { return c ? c->actor_cache_count : 0; }
+extern "C" unsigned doom_combat_boxes_tested(const DoomCombat *c) { return c ? c->actor_boxes_tested : 0; }
+extern "C" unsigned doom_combat_boxes_hit(const DoomCombat *c) { return c ? c->actor_boxes_hit : 0; }
+extern "C" int doom_combat_last_observation(const DoomCombat *c, DoomDamageObservation *out) {
+    if (!c || !out || !c->observation.sequence) return 0;
+    *out=c->observation;
+    return 1;
+}
+extern "C" unsigned doom_combat_drain_observations(DoomCombat *c, DoomDamageObservation *out, unsigned capacity) {
+    if (!c || !out || !capacity) return 0;
+    unsigned count=0;
+    while (count<capacity && c->observation_count) {
+        out[count++]=c->observations[c->observation_head];
+        c->observation_head=(c->observation_head+1u)%static_cast<unsigned>(c->observations.size());
+        --c->observation_count;
+    }
+    return count;
+}
+namespace {
+struct ActorHit { void *object; int id; Vec3 point; float fraction; };
+int trace_actor(DoomCombat *, Vec3, Vec3, ActorHit *);
+bool read_actor_health(DoomCombat *c, void *object, float *value) {
+    __try {
+        if (!c || !object || !value) return false;
+        void *actor=c->dynamic_cast_object(object,0,c->game+0x1C95390,c->game+0x1CA9818,0);
+        if (!actor || actor!=object) return false;
+        auto **vtable=*reinterpret_cast<void ***>(actor);
+        void *getter=vtable ? vtable[199] : nullptr;
+        HMODULE owner=nullptr;
+        if (!getter || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(getter),&owner) ||
+            owner!=reinterpret_cast<HMODULE>(c->game)) return false;
+        const float health=reinterpret_cast<float (__fastcall *)(void *)>(getter)(actor);
+        if (!std::isfinite(health)) return false;
+        *value=health; return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+#if defined(DOOM_MODE_LAB)
+void observe_before(DoomCombat *c, void *target, int id, int weapon, float damage) {
+    uint32_t sequence=c->observation.sequence+1u;
+    if (!sequence) ++sequence;
+    c->observation={}; c->observation.sequence=sequence;
+    c->observation.weapon=weapon; c->observation.target_id=id;
+    c->observation.native_damage=damage;
+    c->observation.before_valid=read_actor_health(c,target,&c->observation.before) ? 1 : 0;
+}
+void observe_after(DoomCombat *c, void *level, void *original, int id) {
+    __try {
+        void *gs=c->get_object(level,id);
+        if (!gs || c->get_id(gs)!=id || c->get_level(gs)!=level) { c->observation.removed=1; return; }
+        void *target=c->dynamic_cast_object(gs,0,c->game+0x1C952A8,c->game+0x1C95390,0);
+        if (!target || target!=original || static_cast<unsigned char *>(target)+40!=gs) {
+            c->observation.removed=1; return;
+        }
+        c->observation.after_valid=read_actor_health(c,target,&c->observation.after) ? 1 : 0;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { c->observation.after_valid=0; }
+}
+void queue_observation(DoomCombat *c) {
+    if (c->observation_count==c->observations.size()) {
+        c->observation_head=(c->observation_head+1u)%static_cast<unsigned>(c->observations.size());
+        --c->observation_count;
+    }
+    unsigned slot=(c->observation_head+c->observation_count)%static_cast<unsigned>(c->observations.size());
+    c->observations[slot]=c->observation;
+    ++c->observation_count;
+}
+#endif
+void *object_from_control(DoomCombat *c, void *control) {
+    for (unsigned i=0;control && i<8;++i) {
+        void *object=c->dynamic_cast_object(control,0,c->game+0x1C952F0,c->game+0x1C95390,0);
+        if (object) return object;
+        if (!c->get_parent) break;
+        void *parent=c->get_parent(control);
+        if (parent==control) break;
+        control=parent;
+    }
+    return nullptr;
+}
 }
 static int fire_hitscan(DoomCombat *c, void *player, void *level, void *camera,
                        const DoomEvent *event, float scale) {
@@ -128,33 +221,48 @@ static int fire_hitscan(DoomCombat *c, void *player, void *level, void *camera,
     alignas(16) std::array<unsigned char,256> collision{};
     int mesh=-1; std::memcpy(collision.data()+32,&mesh,sizeof(mesh));
     auto *actor=static_cast<unsigned char *>(player);
-    if (!c->raytrace(actor+40,0x27,collision.data(),&pos,&end,0,actor+24,0,0,4044024)) {
-        c->last_reason="ray_missed";
-        trace_hitscan("Doom hitscan: ray missed\n");
-        return 1;
-    }
+    const bool world_hit=c->raytrace(actor+40,0x27,collision.data(),&pos,&end,0,actor+24,0,0,4044024)!=0;
+    if (!valid(end)) { c->last_reason="impact_position_invalid"; return 0; }
+    ActorHit actor_hit{};
+    const bool found_actor=trace_actor(c,pos,end,&actor_hit)>0;
     void *hit=nullptr; std::memcpy(&hit,collision.data()+24,sizeof(hit));
     std::memcpy(&mesh,collision.data()+32,sizeof(mesh));
-    if (!hit) { c->last_reason="world_collision"; trace_hitscan("Doom hitscan: world collision\n"); return 1; }
-    if (!valid(end)) { c->last_reason="impact_position_invalid"; return 1; }
-    void *target=c->dynamic_cast_object(hit,0,c->game+0x1C952F0,c->game+0x1C95390,0);
-    if (!target || target==player) { c->last_reason="target_cast_or_self"; trace_hitscan("Doom hitscan: no target object\n"); return 1; }
+    void *target=nullptr;
+    if (found_actor) { target=actor_hit.object; end=actor_hit.point; mesh=-1; }
+    else if (world_hit && hit) target=object_from_control(c,hit);
+    else {
+        c->last_reason=!c->actor_cache_valid ? "actor_query_unavailable" :
+            !c->actor_cache_count ? "actor_query_empty" :
+            !c->actor_boxes_tested ? "actor_candidates_rejected" :
+            !c->actor_boxes_hit ? "actor_bounds_missed" : "actor_not_alive";
+        return 1;
+    }
+    if (!target) { c->last_reason="target_cast_failed"; trace_hitscan("Doom hitscan: target cast failed\n"); return 1; }
+    if (target==player) { c->last_reason="target_is_player"; trace_hitscan("Doom hitscan: hit local player\n"); return 1; }
     auto *target_gs=static_cast<unsigned char *>(target)+40;
     if (c->get_level(actor+40)!=level || c->get_level(target_gs)!=level) {
         c->last_reason="target_level_mismatch"; trace_hitscan("Doom hitscan: target level mismatch\n"); return 0;
     }
     int id=c->get_id(target_gs);
-    if (id<0 || c->get_object(level,id)!=target_gs) {
+    if (id<0) { c->last_reason="target_id_negative"; trace_hitscan("Doom hitscan: target ID negative\n"); return 0; }
+    if (c->get_object(level,id)!=target_gs) {
         c->last_reason="target_id_mismatch"; trace_hitscan("Doom hitscan: target ID mismatch\n"); return 0;
     }
     int invalid_item=-1;
-    const float damage=static_cast<float>(event->damage)*scale;
+    const float damage=static_cast<float>(event->damage)*HostDamagePerDoomUnit*scale;
     if (!std::isfinite(damage) || damage<=0 || damage>100000.0f) { c->last_reason="damage_invalid"; return 0; }
     /* Player engine EDamageType: cut=1, bullet=2, punch1=12. */
     const int damage_type=event->weapon==DOOM_FIST ? 12 :
                           event->weapon==DOOM_CHAINSAW ? 1 : 2;
+#if defined(DOOM_MODE_LAB)
+    observe_before(c,target,id,event->weapon,damage);
+#endif
     c->give_damage(player,target,damage,0.0f,actor+40,&end,&direction,mesh,damage_type,
                    &invalid_item,0.0f,0.0f,0);
+#if defined(DOOM_MODE_LAB)
+    observe_after(c,level,target,id);
+    queue_observation(c);
+#endif
     c->last_reason="damage_dispatched";
     trace_hitscan("Doom hitscan: damage dispatched\n");
     return 1;
@@ -180,7 +288,7 @@ DoomVec3 world_position(Vec3 p) {
     return {p.x*DOOM_WORLD_UNITS_PER_METRE,p.z*DOOM_WORLD_UNITS_PER_METRE,
             p.y*DOOM_WORLD_UNITS_PER_METRE};
 }
-int trace_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, DoomTrace *trace) {
+int trace_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, DoomTrace *trace, bool actors=true) {
     if (!c || !c->world_player || !c->world_level || !trace) return 0;
     if (!c->world_trace_budget) return 0;
     --c->world_trace_budget;
@@ -197,12 +305,24 @@ int trace_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, DoomTrace *trace) {
     if (c->get_level(actor+40)!=c->world_level) return 0;
     bool hit=c->raytrace(actor+40,0x27,collision.data(),&start,&end,0,actor+24,0,0,4044024)!=0;
     if (!valid(end) || c->get_level(actor+40)!=c->world_level) return 0;
+    ActorHit actor_hit{};
+    if (actors && trace_actor(c,start,end,&actor_hit)>0) {
+        trace->hit=1;
+        trace->point=world_position(actor_hit.point);
+        trace->target=(static_cast<uint64_t>(c->world_epoch)<<32) |
+                      (static_cast<uint64_t>(static_cast<uint32_t>(actor_hit.id))+1u);
+        c->world_last_target=trace->target;
+        c->world_last_point=actor_hit.point;
+        c->world_last_direction=unit(delta);
+        c->world_last_mesh=-1;
+        return 1;
+    }
     trace->hit=hit ? 1 : 0;
     trace->point=world_position(end);
     if (!hit) return 1;
     void *control=nullptr; std::memcpy(&control,collision.data()+24,sizeof(control));
     if (!control) return 1;
-    void *target=c->dynamic_cast_object(control,0,c->game+0x1C952F0,c->game+0x1C95390,0);
+    void *target=object_from_control(c,control);
     if (!target || target==c->world_player) return 1;
     auto *gs=static_cast<unsigned char *>(target)+40;
     if (c->get_level(gs)!=c->world_level) return 0;
@@ -291,9 +411,10 @@ bool object_geometry(DoomCombat *c, void *target, Vec3 *center, float *radius) {
     float bounds[6]; std::memcpy(bounds,b,sizeof(bounds));
     for (float n : bounds) if (!std::isfinite(n)) return false;
     if (bounds[0]>bounds[3] || bounds[1]>bounds[4] || bounds[2]>bounds[5]) return false;
-    *center={position.x+(bounds[0]+bounds[3])*0.5f,
-             position.y+(bounds[1]+bounds[4])*0.5f,
-             position.z+(bounds[2]+bounds[5])*0.5f};
+    /* GetExtentsInWorld already applies the object's world transform. */
+    *center={(bounds[0]+bounds[3])*0.5f,
+             (bounds[1]+bounds[4])*0.5f,
+             (bounds[2]+bounds[5])*0.5f};
     float x=(bounds[3]-bounds[0])*0.5f, z=(bounds[5]-bounds[2])*0.5f;
     *radius=(x>z ? x : z)*DOOM_WORLD_UNITS_PER_METRE;
     return valid(*center) && std::isfinite(*radius) && *radius>=0 && *radius<=65536.0f;
@@ -340,6 +461,57 @@ int collect_nearby(DoomCombat *c, DoomVec3 origin, float radius,
     }
     return success;
 }
+int trace_actor(DoomCombat *c, Vec3 from, Vec3 to, ActorHit *out) {
+    if (c) c->actor_boxes_tested=c->actor_boxes_hit=0;
+    if (!c || !out || !c->world_player || !c->world_level || !c->object_bounds ||
+        !valid(from) || !valid(to)) return 0;
+    Vec3 delta{to.x-from.x,to.y-from.y,to.z-from.z};
+    const float length=std::sqrt(dot(delta,delta));
+    if (!std::isfinite(length) || length<0.0001f || length>2048.0f) return 0;
+    const auto covered=[&](Vec3 p) {
+        const float r=c->actor_cache_radius-2.0f;
+        return c->actor_cache_valid && r>=0 &&
+            std::fabs(p.x-c->actor_cache_center.x)<=r &&
+            std::fabs(p.y-c->actor_cache_center.y)<=r &&
+            std::fabs(p.z-c->actor_cache_center.z)<=r;
+    };
+    if (!covered(from) || !covered(to)) {
+        c->actor_cache_center={(from.x+to.x)*0.5f,(from.y+to.y)*0.5f,(from.z+to.z)*0.5f};
+        c->actor_cache_radius=length*0.5f+8.0f;
+        c->actor_cache_count=0; c->actor_cache_valid=false;
+        if (!collect_nearby(c,world_position(c->actor_cache_center),
+                c->actor_cache_radius*DOOM_WORLD_UNITS_PER_METRE,c->actor_cache.data(),
+                static_cast<unsigned>(c->actor_cache.size()),&c->actor_cache_count)) return 0;
+        c->actor_cache_valid=true;
+    }
+    float best=2.0f; void *best_object=nullptr; int best_id=-1;
+    const float begin[3]={from.x,from.y,from.z}, end[3]={to.x,to.y,to.z};
+    for (unsigned i=0;i<c->actor_cache_count;++i) {
+        uint64_t handle=c->actor_cache[i].handle;
+        if (static_cast<uint32_t>(handle>>32)!=c->world_epoch) continue;
+        uint32_t encoded=static_cast<uint32_t>(handle);
+        if (!encoded || encoded>static_cast<uint32_t>(INT32_MAX)+1u) continue;
+        int id=static_cast<int>(encoded-1u);
+        void *gs=c->get_object(c->world_level,id);
+        if (!gs || c->get_id(gs)!=id || c->get_level(gs)!=c->world_level) continue;
+        void *target=c->dynamic_cast_object(gs,0,c->game+0x1C952A8,c->game+0x1C95390,0);
+        if (!target || target==c->world_player || static_cast<unsigned char *>(target)+40!=gs) continue;
+        const float *native_bounds=c->object_bounds(static_cast<unsigned char *>(target)+24);
+        if (!native_bounds) continue;
+        float bounds[6]; std::memcpy(bounds,native_bounds,sizeof(bounds));
+        float fraction=0;
+        ++c->actor_boxes_tested;
+        if (!doom_segment_box(begin,end,bounds,0,&fraction) || fraction>=best) continue;
+        ++c->actor_boxes_hit;
+        float health=0;
+        if (!read_actor_health(c,target,&health) || health<=0) continue;
+        best=fraction; best_object=target; best_id=id;
+    }
+    if (!best_object) return 0;
+    out->object=best_object; out->id=best_id; out->fraction=best;
+    out->point={from.x+delta.x*best,from.y+delta.y*best,from.z+delta.z*best};
+    return 1;
+}
 int world_nearby(void *ctx, DoomVec3 origin, float radius,
                  DoomTarget *out, unsigned capacity, unsigned *count) {
     __try { return collect_nearby(static_cast<DoomCombat *>(ctx),origin,radius,out,capacity,count); }
@@ -358,7 +530,7 @@ int visible_target(DoomCombat *c, DoomVec3 from, uint64_t handle) {
     Vec3 center{}; float radius=0;
     if (!object_geometry(c,target,&center,&radius)) return -1;
     DoomTrace trace{};
-    if (!trace_segment(c,from,world_position(center),&trace)) return -1;
+    if (!trace_segment(c,from,world_position(center),&trace,false)) return -1;
     if (!trace.hit) {
         Vec3 start=engine_position(from);
         c->world_last_target=handle; c->world_last_point=center;
@@ -396,12 +568,19 @@ int damage_target(DoomCombat *c, uint64_t handle, int amount, DoomWeapon weapon)
         c->get_level(static_cast<unsigned char *>(c->world_player)+40)!=c->world_level) return 0;
     if (damage_type!=2 || weapon==DOOM_PLASMA)
         if (doom_hostility_query(c->game,target,c->world_player)!=1) return 0;
-    float damage=static_cast<float>(amount)*c->world_damage_scale;
+    float damage=static_cast<float>(amount)*HostDamagePerDoomUnit*c->world_damage_scale;
     if (!std::isfinite(damage) || damage<=0 || damage>100000.0f) return 0;
     int invalid_item=-1;
+#if defined(DOOM_MODE_LAB)
+    observe_before(c,target,id,weapon,damage);
+#endif
     c->give_damage(c->world_player,target,damage,0.0f,
                    static_cast<unsigned char *>(c->world_player)+40,&c->world_last_point,
                    &c->world_last_direction,c->world_last_mesh,damage_type,&invalid_item,0.0f,0.0f,0);
+#if defined(DOOM_MODE_LAB)
+    observe_after(c,c->world_level,target,id);
+    queue_observation(c);
+#endif
     c->world_last_target=0;
     return 1;
 }
@@ -417,6 +596,7 @@ extern "C" int doom_combat_world_bind(DoomCombat *c, void *player, void *level,
     c->world_player=player; c->world_level=level; c->world_generation=generation;
     c->world_damage_scale=damage_scale; c->world_last_target=0;
     c->world_trace_budget=128;
+    c->actor_cache_valid=false; c->actor_cache_count=0;
     if (!++c->world_epoch) ++c->world_epoch;
     std::memset(host,0,sizeof(*host));
     host->context=c; host->sweep=world_sweep; host->aim=world_aim; host->damage=world_damage;
@@ -428,4 +608,5 @@ extern "C" int doom_combat_world_bind(DoomCombat *c, void *player, void *level,
 extern "C" void doom_combat_world_unbind(DoomCombat *c) {
     if (!c) return;
     c->world_player=nullptr; c->world_level=nullptr; c->world_last_target=0;
+    c->actor_cache_valid=false; c->actor_cache_count=0;
 }

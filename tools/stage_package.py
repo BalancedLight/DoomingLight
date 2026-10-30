@@ -90,6 +90,7 @@ def main() -> int:
         shutil.copyfile(ROOT / "third_party/opl/LICENSE", destination / "LICENSE.OPL")
         shutil.copyfile(ROOT / "third_party/opl/NOTICE.txt", destination / "NOTICE.OPL.txt")
         shutil.copyfile(ROOT / "third_party/minhook/LICENSE.txt", destination / "LICENSE.MINHOOK.txt")
+        shutil.copyfile(ROOT / "third_party/tsf/LICENSE", destination / "LICENSE.TSF.txt")
         shutil.copyfile(module, destination / "DoomMode.dll")
         manifest = json.loads((destination / "mod.dluma.json").read_text(encoding="utf-8"))
         if args.lab:

@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -113,7 +114,7 @@ struct DoomHudHost {
     void *stock_root; void *stock_elements[8]; bool stock_owned[8];
     void *death_root, *death_elements[5]; bool death_owned[5];
     DoomHudHost *layers[2]; unsigned layer_kind; bool split_layers, inside_layered_update;
-    float status_scale;
+    float status_scale, weapon_x, weapon_y;
 };
 static const char *const stock_ids[8] = {"HudHealthIndicator", "HudStamina", "HudRadar", "HudPrimaryWeaponIndicator", "HudSecondaryWeaponIndicator", "HudWeaponSelection", "HudCrosshair", "HudReloadNotify"};
 static void *find_stock_root(DoomHudHost *h) {
@@ -490,6 +491,7 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
             if (h->retiring.texture && !release_texture(h, &h->retiring, true))
                 return h->bound ? 1 : 0;
             if (!h->set_texture(image, &alias)) return h->bound ? 1 : 0;
+            h->material_applied = false;
             h->retiring = h->current;
             h->current = h->pending; std::memset(&h->pending, 0, sizeof(h->pending));
             if (h->retiring.texture) (void)release_texture(h, &h->retiring, true);
@@ -497,23 +499,29 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
             hud_trace("Doom HUD: texture bound\n");
         } else if (!h->bound) {
             h->bound = h->set_texture(image, &alias) != 0;
+            if (h->bound) h->material_applied = false;
         }
         if (h->bound && h->material_owned && h->set_sprite_material && !h->material_applied) {
             TtlString material_name = str(h->bilinear ? "sprite.mat" : "sprite_nofiltering.mat");
             h->set_sprite_material(image, &material_name);
             h->material_applied = true;
         }
+        int image_x = origin_x, image_y = origin_y;
+        if (h->layer_kind == 0 && h->split_layers && h->inside_layered_update) {
+            image_x += static_cast<int>(std::round(h->weapon_x * canvas_width / 320.0f));
+            image_y += static_cast<int>(std::round(h->weapon_y * canvas_height / 200.0f));
+        }
         const int image_width = physical_size ? static_cast<int>(draw_width) : canvas_width;
         const int image_height = physical_size ? static_cast<int>(draw_height) : canvas_height;
         if (h->bound && (scale != h->scale || client_width != h->client_width || client_height != h->client_height ||
-                         h->draw_x != origin_x || h->draw_y != origin_y ||
+                         h->draw_x != image_x || h->draw_y != image_y ||
                          h->draw_width != image_width || h->draw_height != image_height)) {
-            Vec3 position = {static_cast<float>(origin_x), static_cast<float>(origin_y), 0.0f};
+            Vec3 position = {static_cast<float>(image_x), static_cast<float>(image_y), 0.0f};
             h->width(image, static_cast<float>(image_width));
             h->height(image, static_cast<float>(image_height));
             h->position(image, &position);
             h->scale = scale; h->client_width = client_width; h->client_height = client_height;
-            h->draw_x = origin_x; h->draw_y = origin_y; h->draw_width = image_width; h->draw_height = image_height;
+            h->draw_x = image_x; h->draw_y = image_y; h->draw_width = image_width; h->draw_height = image_height;
         }
         if (h->bound && !h->shown) { h->set_visible(image, 1); if (h->owns_screen) h->show(level, h->screen_id, nullptr); h->shown = true; }
         if (h->owns_screen && h->bound && h->shown && (!h->split_layers || (h->layers[0] && h->layers[0]->bound))) stock_visibility(h, true);
@@ -522,7 +530,8 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
 }
 extern "C" int doom_hud_host_update_layers(DoomHudHost *h, void *level, uint32_t generation,
                                              const uint8_t *weapon, const uint8_t *status,
-                                             const uint8_t *message, float hud_scale, float weapon_scale) {
+                                             const uint8_t *message, float hud_scale, float weapon_scale,
+                                             float weapon_x, float weapon_y) {
     if (!h || !h->owns_screen || !weapon || !status || !message ||
         level != h->level || generation != h->generation) return 0;
     __try {
@@ -530,8 +539,10 @@ extern "C" int doom_hud_host_update_layers(DoomHudHost *h, void *level, uint32_t
         void *owner = h->get_owner(h->root);
         static const char *const ids[2] = {"I_DLUMAStatusBar", "I_DLUMAMessage"};
         if (!(hud_scale == 0.0f || (hud_scale >= 0.5f && hud_scale <= 2.0f)) ||
-            !(weapon_scale >= 0.5f && weapon_scale <= 2.0f)) return 0;
-        h->status_scale = hud_scale;
+            !(weapon_scale >= 0.5f && weapon_scale <= 2.0f) ||
+            !(weapon_x >= -320.0f && weapon_x <= 320.0f) ||
+            !(weapon_y >= -200.0f && weapon_y <= 200.0f)) return 0;
+        h->status_scale = hud_scale; h->weapon_x = weapon_x; h->weapon_y = weapon_y;
         h->split_layers = true;
         for (unsigned i = 0; i < 2; ++i) if (!h->layers[i]) {
             TtlString id = str(ids[i]);

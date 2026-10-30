@@ -8,7 +8,9 @@ extern "C"
     typedef enum DoomSpriteKind
     {
         DOOM_SPRITE_PICKUP,
-        DOOM_SPRITE_PROJECTILE
+        DOOM_SPRITE_PROJECTILE,
+        DOOM_SPRITE_BFG_HIT,
+        DOOM_SPRITE_HIT
     } DoomSpriteKind;
     /* Position is in Doom units. The host renderer owns projection, depth testing,
        WAD image lifetime and drawing; the name pointer is static. */

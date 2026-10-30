@@ -27,6 +27,10 @@ Music settings choose the Doom soundtrack, normal Dying Light music, or silence.
 Default track numbers match `IDMUS`: `11` for Doom's E1M1, `01` for Doom II's
 MAP01. Zero selects the first track automatically. Sound effects include
 `DSNOWAY`, Doom's failed-interaction sound.
+In Mods, select **SoundFont (SF2)** as the music synthesizer and set
+**SoundFont file** to an SF2 from your own collection. Font changes prepare
+the current track before switching playback. If the font cannot be loaded,
+the track uses Classic OPL. No SoundFont is bundled.
 
 The player simulation recognizes `IDDQD`, `IDFA`, `IDKFA`, `IDCHOPPERS` and `IDMUSnn`.
 Doom keycards do not unlock Dying Light quest doors.
@@ -34,6 +38,17 @@ Doom keycards do not unlock Dying Light quest doors.
 Left mouse and the configurable extra fire key (Left Ctrl by default) fire.
 Weapon keys 1–7 select the classic slots; 1 cycles melee weapons and 3 cycles
 the shotgun and super shotgun when available.
+Inventory, map, quest and skill-menu hotkeys are disabled during Doom gameplay.
+Escape still opens the pause menu and Mods settings.
+
+The status bar fits the screen width by default. Its scale and weapon sprite
+scale are separate. Doom graphics use point filtering; enable **Bilinear Doom
+textures** to smooth the HUD, weapons, effects and pickups. These presentation
+settings apply immediately.
+
+Weapon sprites bob with movement. **Projectile lights** lets plasma and BFG
+shots illuminate nearby surfaces. BFG spray hits show Doom's target-impact
+animation.
 
 ## Build
 

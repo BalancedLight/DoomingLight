@@ -1,0 +1,7 @@
+TinySoundFont v0.9
+Copyright (C) 2017-2023 Bernhard Schelling
+Based on SFZero, Copyright (C) 2012 Steve Folta
+Licensed under the MIT license; see LICENSE.
+Source: https://github.com/schellingb/TinySoundFont
+tsf.h Git blob a81f25d5ca2e210720d646dec2dbfaeb119acb09
+LICENSE Git blob 533da73eb51d65d6c34d4baf3420d770c3570a5e

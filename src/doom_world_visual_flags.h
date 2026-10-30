@@ -1,0 +1,8 @@
+#ifndef DOOM_WORLD_VISUAL_FLAGS_H
+#define DOOM_WORLD_VISUAL_FLAGS_H
+enum DoomWorldVisualFlags {
+    DOOM_WORLD_SPRITE_FULLBRIGHT = 1u << 0,
+    DOOM_WORLD_SPRITE_LIGHT_PLASMA = 1u << 1,
+    DOOM_WORLD_SPRITE_LIGHT_BFG = 1u << 2
+};
+#endif

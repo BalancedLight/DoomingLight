@@ -17,7 +17,8 @@
         {"key": "hud_fit_screen", "name": "Fit status bar to screen", "description": "Fit the status bar to the screen width.", "type": "boolean", "default": true},
         {"key": "hud_scale", "name": "Status bar scale (%)", "description": "Size of the status bar when Fit status bar to screen is off.", "type": "integer", "default": 100, "min": 50, "max": 200, "step": 10},
         {"key": "weapon_scale", "name": "Weapon sprite scale (%)", "description": "Size of Doom weapon sprites.", "type": "integer", "default": 100, "min": 50, "max": 200, "step": 10},
-        {"key": "bilinear_filtering", "name": "Bilinear textures", "description": "Smooth Doom's HUD, weapons, effects and pickups. Applies immediately.", "type": "boolean", "default": false},
+        {"key": "bilinear_filtering", "name": "Bilinear Doom textures", "description": "Smooth Doom's HUD, weapons, effects and pickups. Applies immediately.", "type": "boolean", "default": false},
+        {"key": "dynamic_lights", "name": "Projectile lights", "description": "Plasma and BFG shots light nearby surfaces. Applies immediately.", "type": "boolean", "default": true},
         {"key": "incoming_damage", "name": "Incoming damage (%)", "description": "Damage taken before Doom armor absorbs its share.", "type": "integer", "default": 100, "min": 10, "max": 500, "step": 10},
         {"key": "outgoing_damage", "name": "Weapon damage (%)", "description": "Damage dealt by Doom weapons.", "type": "integer", "default": 100, "min": 10, "max": 500, "step": 10},
         {"key": "cheats", "name": "Cheat commands", "description": "Type IDDQD, IDFA, IDKFA, IDCHOPPERS or IDMUS followed by two digits during gameplay.", "type": "boolean", "default": true}
@@ -27,6 +28,8 @@
       "id": "audio", "name": "Music and sound",
       "settings": [
         {"key": "music", "name": "Music", "description": "Doom music and Off stop Dying Light's music manager while the mode is active.", "type": "enum", "default": "doom", "options": [{"value": "doom", "name": "Doom music"}, {"value": "host", "name": "Dying Light music"}, {"value": "off", "name": "Off"}]},
+        {"key": "music_synth", "name": "Music synthesizer", "description": "Choose the instruments used for Doom music. Applies immediately.", "type": "enum", "default": "opl", "options": [{"value": "opl", "name": "Classic OPL"}, {"value": "soundfont", "name": "SoundFont (SF2)"}]},
+        {"key": "soundfont", "name": "SoundFont file", "description": "Path to an SF2 file for SoundFont music. Applies immediately.", "type": "text", "default": "", "maxLength": 1024},
         {"key": "default_track", "name": "Default track (IDMUS number)", "description": "Applies on the next map. Use 0 for E1M1 in Doom or MAP01 in Doom II.", "type": "integer", "default": 0, "min": 0, "max": 49, "step": 1},
         {"key": "music_volume", "name": "Music volume (%)", "description": "Volume of the Doom soundtrack.", "type": "integer", "default": 70, "min": 0, "max": 100, "step": 5},
         {"key": "effects_volume", "name": "Sound volume (%)", "description": "Volume of Doom weapons, pickups and the failed-interaction sound.", "type": "integer", "default": 100, "min": 0, "max": 100, "step": 5}

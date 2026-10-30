@@ -1,4 +1,5 @@
 #include "doom_world_renderer.h"
+#include "doom_world_lights.h"
 #include <windows.h>
 #include <cmath>
 #include <cstdio>
@@ -23,8 +24,10 @@ using ReleaseTexture = unsigned char (__fastcall *)(void *, void *);
 using CloneMaterial = void *(__fastcall *)(void *, void *, const char *);
 using ReleaseMaterial = void (__fastcall *)(void *, void **);
 using SetTexture = unsigned char (__fastcall *)(void *, unsigned char, void *);
-struct Slot { void *emitter, *particle, *texture; unsigned char *pixels; unsigned handle, serial, edge; };
-struct Impl { unsigned char *base; void *level, *fx, *defs, *mats; Slot slots[64]; unsigned serial, generation; bool quarantined; };
+using GetSampler = void *(__fastcall *)(void *, uint32_t);
+struct Slot { void *emitter, *particle, *texture; unsigned char *pixels; unsigned handle, serial, edge, light; };
+struct Impl { unsigned char *base; void *level, *fx, *defs, *mats; Slot slots[64]; DoomWorldLights *lights; unsigned generation; bool quarantined, bilinear, light_attempted; };
+volatile LONG world_serial = 0;
 bool finite_position(const float *p) { return p && std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]); }
 void trace_failure(const char *message) { OutputDebugStringA(message); }
 bool identities(Impl *r,void *level,uint32_t generation) {
@@ -44,6 +47,10 @@ void release_def(Impl *r, void *&def, unsigned registry_offset) {
     if (def && r->defs) { reinterpret_cast<ReleaseDef>(r->base+0x204660)(r->defs,def,static_cast<unsigned char *>(r->defs)+registry_offset); def=nullptr; }
 }
 void clear_slot(Impl *r, Slot &s) {
+    if (s.light && r->lights) {
+        doom_world_lights_remove(r->lights,r->level,r->generation,s.light);
+        s.light=0;
+    }
     if (s.handle && r->fx) {
         auto **vtable=*reinterpret_cast<void ***>(r->fx);
         using StopFx = unsigned char (__fastcall *)(void *, unsigned);
@@ -57,15 +64,45 @@ void clear_slot(Impl *r, Slot &s) {
     s.edge=0;
     s.serial=0;
 }
+/* The material pack owns sampler-cache records. A cloned material has its own
+ * texture/sampler pointer pairs and borrows those records for the pack's life. */
+bool set_point_sampler(Impl *r, void *clone, void *source, void *texture) {
+    auto *material=*reinterpret_cast<unsigned char **>(static_cast<unsigned char *>(clone)+8);
+    auto *source_material=*reinterpret_cast<unsigned char **>(static_cast<unsigned char *>(source)+8);
+    if (!material || !source_material || material == source_material) return false;
+    auto *record=*reinterpret_cast<unsigned char **>(material);
+    void *pack=*reinterpret_cast<void **>(material+24);
+    if (!record || !pack || pack!=*reinterpret_cast<void **>(source_material+24)) return false;
+    const unsigned techniques=material[48], textures=material[49];
+    if (techniques>4 || !textures || textures>32 ||
+        *reinterpret_cast<const uint16_t *>(record+16)!=techniques ||
+        *reinterpret_cast<const uint16_t *>(record+18)!=textures) return false;
+    const unsigned offset=*reinterpret_cast<const uint16_t *>(record+22);
+    if (offset<2) return false;
+    const uint32_t sampler_word=*reinterpret_cast<const uint32_t *>(record+22+offset);
+    const unsigned filter=(sampler_word>>16)&15u;
+    if (filter>8) return false;
+    auto **pair=reinterpret_cast<void **>(material+64+32*techniques);
+    if (pair[0]!=texture || !pair[1]) return false;
+    auto get_sampler=reinterpret_cast<GetSampler>(r->base+0x82d050);
+    if (get_sampler(pack,sampler_word)!=pair[1] ||
+        *reinterpret_cast<const uint32_t *>(static_cast<unsigned char *>(pair[1])+8)!=sampler_word) return false;
+    const uint32_t point_word=sampler_word & ~0x000f0000u;
+    void *point=get_sampler(pack,point_word);
+    if (!point || !*reinterpret_cast<void **>(point) ||
+        *reinterpret_cast<const uint32_t *>(static_cast<unsigned char *>(point)+8)!=point_word) return false;
+    pair[1]=point;
+    return true;
+}
 }
 struct DoomWorldRenderer { Impl impl; };
-extern "C" DoomWorldRenderer *doom_world_renderer_create(void *module, void *level,uint32_t generation) {
+extern "C" DoomWorldRenderer *doom_world_renderer_create(void *module, void *level,uint32_t generation,int bilinear) {
     if (!module || !level) return nullptr;
     auto *r=static_cast<DoomWorldRenderer *>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(DoomWorldRenderer)));
     if (!r) return nullptr;
     __try {
         r->impl.base=static_cast<unsigned char *>(module);
-        r->impl.level=level; r->impl.generation=generation;
+        r->impl.level=level; r->impl.generation=generation; r->impl.bilinear=bilinear!=0;
         auto *b=r->impl.base;
         static const struct { unsigned rva; unsigned char bytes[12]; } checks[]={
           {0x2dded0,{0x48,0x8b,0x41,0x08,0x48,0x05,0xb8,0,0,0,0xc3,0xcc}},
@@ -81,6 +118,8 @@ extern "C" DoomWorldRenderer *doom_world_renderer_create(void *module, void *lev
           {0x29c1c0,{0x48,0x83,0xec,0x68,0x48,0x8b,0x02,0x48,0x8d,0x15,0x73,0xb1}},
           {0x29c230,{0x48,0x83,0xec,0x68,0x8b,0x84,0x24,0xc0,0,0,0,0x48}},
           {0x29a9f0,{0x48,0x8d,0x0d,0xa9,0x46,0x8b,0,0xe9,0x84,0x26,0x51,0}},
+          {0x8040c0,{0x48,0x89,0x54,0x24,0x10,0x53,0x57,0x41,0x55,0x41,0x56,0x41}},
+          {0x82d050,{0x89,0x54,0x24,0x10,0x53,0x48,0x83,0xec,0x60,0x45,0x33,0xc0}},
         };
         for (const auto &check:checks) if (std::memcmp(b+check.rva,check.bytes,sizeof check.bytes)) __leave;
         r->impl.fx=reinterpret_cast<GetFx>(b+0x2dded0)(level);
@@ -95,13 +134,14 @@ extern "C" DoomWorldRenderer *doom_world_renderer_create(void *module, void *lev
     } __except(EXCEPTION_EXECUTE_HANDLER) {}
     HeapFree(GetProcessHeap(),0,r); return nullptr;
 }
-extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level,uint32_t generation,const uint8_t *rgba,unsigned edge,const float position[3],float size) {
+extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level,uint32_t generation,const uint8_t *rgba,unsigned edge,const float position[3],float size,unsigned flags) {
     if (!owner || !rgba || !finite_position(position) || edge<16 || edge>512 || (edge&(edge-1)) || !(size>0 && size<=8)) return 0;
     Impl *r=&owner->impl; Slot *s=nullptr; char script[512], unique[64];
     if(!identities(r,level,generation)) return 0;
     for (auto &entry:r->slots) if(!entry.serial) { s=&entry; break; }
     if (!s) return 0;
-    s->serial=++r->serial; if(!s->serial) s->serial=++r->serial;
+    s->serial=static_cast<unsigned>(InterlockedIncrement(&world_serial));
+    if(!s->serial) s->serial=static_cast<unsigned>(InterlockedIncrement(&world_serial));
     __try {
         auto *b=r->base; void *original=nullptr, *clone=nullptr;
         s->edge=edge;
@@ -131,6 +171,10 @@ extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level
         if(cv[10]!=b+0x816bd0 || !reinterpret_cast<SetTexture>(cv[10])(clone,0,s->texture)) {
             reinterpret_cast<ReleaseMaterial>(mv[4])(r->mats,&clone); __leave;
         }
+        if(!r->bilinear && !set_point_sampler(r,clone,original,s->texture)) {
+            trace_failure("Doom world: point sampler unavailable\n");
+            reinterpret_cast<ReleaseMaterial>(mv[4])(r->mats,&clone); __leave;
+        }
         reinterpret_cast<ReleaseMaterial>(mv[4])(r->mats,material_ptr);
         *material_ptr=clone;
         auto **fxv=*reinterpret_cast<void ***>(r->fx);
@@ -138,6 +182,14 @@ extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level
         const float up[3]={0,1,0};
         s->handle=reinterpret_cast<CreateFx>(fxv[37])(r->fx,s->emitter,s->particle,position,up,nullptr,-1);
         if(!s->handle) { trace_failure("Doom world: emitter creation failed\n"); __leave; }
+        if (flags & (DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG)) {
+            if (!r->light_attempted) {
+                r->light_attempted=true;
+                r->lights=doom_world_lights_create(r->base,r->level,r->generation);
+            }
+            if (r->lights) s->light=doom_world_lights_add(r->lights,r->level,r->generation,position,
+                                                          (flags & DOOM_WORLD_SPRITE_LIGHT_BFG)!=0);
+        }
         trace_failure("Doom world: sprite created\n");
         return s->serial;
     } __except(EXCEPTION_EXECUTE_HANDLER) { r->quarantined=true; return 0; }
@@ -163,7 +215,10 @@ extern "C" int doom_world_renderer_move(DoomWorldRenderer *owner,void *level,uin
             if(v[70]!=owner->impl.base+0x1ec770) return 0;
             /* FXSetPosition edits a local curve which is multiplied by the
              * spawn transform. Update its world-space start transform instead. */
-            return reinterpret_cast<MoveFx>(v[70])(owner->impl.fx,s.handle,position,nullptr,nullptr)!=0;
+            const int moved=reinterpret_cast<MoveFx>(v[70])(owner->impl.fx,s.handle,position,nullptr,nullptr)!=0;
+            if (moved && s.light && owner->impl.lights)
+                doom_world_lights_move(owner->impl.lights,level,generation,s.light,position);
+            return moved;
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) { owner->impl.quarantined=true; } return 0;
 }
@@ -176,16 +231,17 @@ extern "C" int doom_world_renderer_destroy(DoomWorldRenderer *owner,void *level,
     if(!owner->impl.quarantined) {
         bool empty=true;
         for(const auto &s:owner->impl.slots) if(s.serial) { empty=false; break; }
-        if(empty) { HeapFree(GetProcessHeap(),0,owner); return 1; }
+        if(empty && !owner->impl.lights) { HeapFree(GetProcessHeap(),0,owner); return 1; }
     }
     if(!identities(&owner->impl,level,generation)) return 0;
     __try { for(auto &s:owner->impl.slots) if(s.serial) clear_slot(&owner->impl,s); } __except(EXCEPTION_EXECUTE_HANDLER) { owner->impl.quarantined=true; return 0; }
+    if(owner->impl.lights && !doom_world_lights_destroy(owner->impl.lights,level,generation)) return 0;
     HeapFree(GetProcessHeap(),0,owner); return 1;
 }
 #else
 struct DoomWorldRenderer {};
-extern "C" DoomWorldRenderer *doom_world_renderer_create(void *,void *,uint32_t) { return nullptr; }
-extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *,void *,uint32_t,const uint8_t *,unsigned,const float *,float) { return 0; }
+extern "C" DoomWorldRenderer *doom_world_renderer_create(void *,void *,uint32_t,int) { return nullptr; }
+extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *,void *,uint32_t,const uint8_t *,unsigned,const float *,float,unsigned) { return 0; }
 extern "C" int doom_world_renderer_update(DoomWorldRenderer *,void *,uint32_t,uint32_t,const uint8_t *,unsigned) { return 0; }
 extern "C" int doom_world_renderer_move(DoomWorldRenderer *,void *,uint32_t,uint32_t,const float *) { return 0; }
 extern "C" int doom_world_renderer_remove(DoomWorldRenderer *,void *,uint32_t,uint32_t) { return 0; }

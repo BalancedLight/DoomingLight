@@ -1,11 +1,80 @@
 #include "doom_hud.h"
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct HudPatch { char name[9]; DoomImage image; int valid; } HudPatch;
-struct DoomHud { const DoomWad *wad; HudPatch patches[256]; unsigned count; size_t image_bytes; };
+struct DoomHud {
+    const DoomWad *wad;
+    HudPatch patches[256];
+    unsigned count;
+    size_t image_bytes;
+    double bob_phase, filtered_speed, bob_amplitude;
+    double bob_target_x, bob_target_y, bob_x, bob_y, parkour_y;
+};
+
+void doom_hud_motion_reset(DoomHud *hud)
+{
+    if (!hud) return;
+    hud->bob_phase = 0;
+    hud->filtered_speed = hud->bob_amplitude = 0;
+    hud->bob_target_x = hud->bob_target_y = 0;
+    hud->bob_x = hud->bob_y = hud->parkour_y = 0;
+}
+
+void doom_hud_bob_reset(DoomHud *hud) { doom_hud_motion_reset(hud); }
+
+void doom_hud_motion_update(DoomHud *hud, const DoomPlayer *player, unsigned elapsed_ms,
+                            float horizontal_speed_mps, float lower_pixels,
+                            float *offset_x, float *offset_y)
+{
+    const double pi = 3.14159265358979323846;
+    double dt, alpha, motion_alpha, momentum, target_amplitude, half_phase;
+    int active;
+    if (offset_x) *offset_x = 0.0f;
+    if (offset_y) *offset_y = 0.0f;
+    if (!hud) return;
+    if (elapsed_ms > 250u) elapsed_ms = 250u;
+    dt = (double)elapsed_ms / 1000.0;
+    alpha = 1.0 - exp(-dt / 0.12);
+    motion_alpha = 1.0 - exp(-dt / 0.07);
+    if (!isfinite(horizontal_speed_mps) || horizontal_speed_mps < 0.0f)
+        horizontal_speed_mps = 0.0f;
+    if (horizontal_speed_mps > 24.0f) horizontal_speed_mps = 24.0f;
+    if (!isfinite(lower_pixels) || lower_pixels < 0.0f) lower_pixels = 0.0f;
+    if (lower_pixels > 200.0f) lower_pixels = 200.0f;
+    active = !player || (player->health > 0 && !player->switch_phase);
+    hud->filtered_speed += ((double)horizontal_speed_mps - hud->filtered_speed) * alpha;
+    hud->bob_phase = fmod(hud->bob_phase + dt * 35.0, 64.0);
+    /* P_CalcHeight uses (momx^2 + momy^2)/4, capped at 16.
+       Momentum is measured in Doom units per 35 Hz tic. */
+    momentum = hud->filtered_speed * 32.0 / 35.0;
+    target_amplitude = momentum >= 8.0 ? 16.0 : momentum * momentum / 4.0;
+    hud->bob_amplitude += (target_amplitude - hud->bob_amplitude) * alpha;
+    if (!active) {
+        hud->bob_target_x = hud->bob_target_y = 0.0;
+    } else if (!player || !player->cooldown) {
+        half_phase = fmod(hud->bob_phase, 32.0);
+        hud->bob_target_x = hud->bob_amplitude * cos(2.0 * pi * hud->bob_phase / 64.0);
+        hud->bob_target_y = hud->bob_amplitude * sin(pi * half_phase / 32.0);
+    }
+    hud->bob_x += (hud->bob_target_x - hud->bob_x) * motion_alpha;
+    hud->bob_y += (hud->bob_target_y - hud->bob_y) * motion_alpha;
+    /* Ledge hangs must remain hidden even if a weapon switch is in progress. */
+    if (player && player->health <= 0) lower_pixels = 0.0f;
+    hud->parkour_y += ((double)lower_pixels - hud->parkour_y) * alpha;
+    if (fabs(hud->parkour_y - (double)lower_pixels) < 0.25)
+        hud->parkour_y = (double)lower_pixels;
+    if (offset_x) *offset_x = (float)hud->bob_x;
+    if (offset_y) *offset_y = (float)(hud->bob_y + hud->parkour_y);
+}
+
+void doom_hud_bob_tick(DoomHud *hud, float horizontal_speed_mps)
+{
+    doom_hud_motion_update(hud, NULL, 29, horizontal_speed_mps, 0.0f, NULL, NULL);
+}
 
 DoomHud *doom_hud_create(const DoomWad *wad)
 {

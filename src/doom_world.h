@@ -13,6 +13,11 @@ extern "C"
 #define DOOM_WORLD_MAX_PROJECTILES 64
 #define DOOM_WORLD_MAX_PICKUPS 64
 #define DOOM_WORLD_MAX_SPLASH_TARGETS 64
+#define DOOM_WORLD_MAX_BFG_HIT_FX 40
+#define DOOM_WORLD_MAX_HIT_FX 64
+#define DOOM_WORLD_MAX_IMPACT_SOUNDS 128
+#define DOOM_SPLASH_HISTORY 8
+#define DOOM_SPLASH_SAMPLE_LIMIT 16
 #define DOOM_WORLD_ERROR_HOST_QUERY 1u
 #define DOOM_WORLD_ERROR_HOST_DAMAGE 2u
 
@@ -67,17 +72,76 @@ extern "C"
         DoomVec3 position;
         unsigned age;
     } DoomPickup;
+    typedef struct DoomBfgHitFx
+    {
+        int active;
+        unsigned age;
+        DoomVec3 position;
+    } DoomBfgHitFx;
+    typedef enum DoomImpactKind { DOOM_IMPACT_PUFF, DOOM_IMPACT_BLOOD } DoomImpactKind;
+    typedef struct DoomHitFx
+    {
+        int active;
+        unsigned age;
+        DoomImpactKind kind;
+        DoomVec3 position;
+    } DoomHitFx;
+    typedef struct DoomImpactSound
+    {
+        DoomWeapon weapon;
+        DoomVec3 position;
+        const char *lump;
+    } DoomImpactSound;
+#if defined(DOOM_MODE_LAB)
+    typedef enum DoomSplashSampleState
+    {
+        DOOM_SPLASH_INVALID,
+        DOOM_SPLASH_OUTSIDE,
+        DOOM_SPLASH_BLOCKED,
+        DOOM_SPLASH_QUERY_FAILED,
+        DOOM_SPLASH_DAMAGE_FAILED,
+        DOOM_SPLASH_DAMAGED
+    } DoomSplashSampleState;
+    typedef struct DoomSplashSample
+    {
+        uint64_t target;
+        float center_distance, edge_distance, radius;
+        int damage;
+        DoomSplashSampleState state;
+    } DoomSplashSample;
+    typedef struct DoomSplashTelemetry
+    {
+        uint32_t sequence;
+        DoomVec3 impact;
+        uint64_t direct_target;
+        int direct_damage, direct_result;
+        unsigned query_ok, candidates, at_capacity, invalid, outside, blocked;
+        unsigned visible, query_failed, damage_failed, damaged, sample_count;
+        DoomSplashSample samples[DOOM_SPLASH_SAMPLE_LIMIT];
+    } DoomSplashTelemetry;
+#endif
     typedef struct DoomWorld
     {
         uint64_t generation;
         unsigned errors;
         DoomProjectile projectiles[DOOM_WORLD_MAX_PROJECTILES];
         DoomPickup pickups[DOOM_WORLD_MAX_PICKUPS];
+        DoomBfgHitFx bfg_hit_fx[DOOM_WORLD_MAX_BFG_HIT_FX];
+        DoomHitFx hit_fx[DOOM_WORLD_MAX_HIT_FX];
+        DoomImpactSound impact_sounds[DOOM_WORLD_MAX_IMPACT_SOUNDS];
+        unsigned impact_sound_head, impact_sound_count;
         uint64_t killed[128];
         unsigned killed_next;
+#if defined(DOOM_MODE_LAB)
+        uint32_t splash_sequence;
+        DoomSplashTelemetry splash_history[DOOM_SPLASH_HISTORY];
+#endif
     } DoomWorld;
     typedef void (*DoomPickupFn)(void *context, DoomDrop kind, int amount);
     void doom_world_reset(DoomWorld *world, uint64_t generation);
+    unsigned doom_world_drain_impact_sounds(DoomWorld *world, DoomImpactSound *out, unsigned capacity);
+    void doom_world_add_hit_fx(DoomWorld *world, DoomImpactKind kind, DoomVec3 position);
+    const char *doom_world_hit_fx_sprite(const DoomHitFx *effect);
     int doom_world_fire(DoomWorld *world, DoomWeapon weapon, DoomVec3 origin, DoomVec3 direction);
     int doom_world_enemy_killed(DoomWorld *world, DoomPlayer *player, uint64_t death_id,
                                 DoomVec3 position);
@@ -90,6 +154,7 @@ extern "C"
                                       DoomPickupFn pickup, void *context);
     const char *doom_world_pickup_sprite(DoomDrop kind);
     const char *doom_world_projectile_sprite(const DoomProjectile *projectile);
+    const char *doom_world_bfg_hit_sprite(const DoomBfgHitFx *effect);
 #ifdef __cplusplus
 }
 #endif

@@ -48,7 +48,7 @@ static int aim(void *context, DoomVec3 origin, DoomVec3 direction, float range, 
 static int damage(void *context, uint64_t target, int amount, DoomWeapon weapon)
 {
     (void)context;
-    assert(target == 42 && amount > 0 && (weapon == DOOM_ROCKET || weapon == DOOM_BFG));
+    assert(target == 42 && amount > 0 && (weapon == DOOM_ROCKET || weapon == DOOM_BFG || weapon == DOOM_PLASMA));
     ++damage_calls;
     damage_total += amount;
     return 1;
@@ -61,6 +61,7 @@ int main(void)
     DoomWorldHost host;
     DoomWorldRuntime runtime;
     DoomWorldFrame frame;
+    DoomImpactSound sounds[3];
     unsigned i;
     memset(&host, 0, sizeof(host));
     host.sweep = sweep;
@@ -70,17 +71,33 @@ int main(void)
     host.damage = damage;
     doom_reset(&player, 1);
     doom_world_reset(&world, 1);
+    doom_world_add_hit_fx(&world, DOOM_IMPACT_PUFF, start);
+    doom_world_add_hit_fx(&world, DOOM_IMPACT_BLOOD, drop);
+    assert(!strcmp(doom_world_hit_fx_sprite(&world.hit_fx[0]), "PUFFA0"));
+    assert(!strcmp(doom_world_hit_fx_sprite(&world.hit_fx[1]), "BLUDC0"));
     assert(doom_world_fire(&world, DOOM_ROCKET, start, dir));
     doom_world_tick(&world, &player, start, 56, &host);
     assert(damage_calls == 2 && damage_total >= 148 &&
            world.projectiles[0].state == DOOM_PROJECTILE_IMPACT && !world.errors);
+#if defined(DOOM_MODE_LAB)
+    assert(world.splash_sequence == 1 && world.splash_history[0].query_ok);
+    assert(world.splash_history[0].direct_target == 42 && world.splash_history[0].direct_result == 1);
+    assert(world.splash_history[0].candidates == 1 && world.splash_history[0].damaged == 1);
+    assert(world.splash_history[0].samples[0].state == DOOM_SPLASH_DAMAGED);
+#endif
     player.ammo[0] = 0;
     assert(doom_world_enemy_killed(&world, &player, 1, drop));
     assert(!doom_world_enemy_killed(&world, &player, 1, drop));
     doom_world_tick(&world, &player, drop, 56, &host);
     assert(player.ammo[0] == 10 && !world.pickups[0].active);
+    assert(doom_world_drain_impact_sounds(&world, sounds, 3) == 1);
+    assert(sounds[0].weapon == DOOM_ROCKET && sounds[0].position.x == 20.0f &&
+           !strcmp(sounds[0].lump, "DSBAREXP"));
+    assert(!doom_world_drain_impact_sounds(&world, sounds, 3));
+    assert(world.hit_fx[0].age==2 && world.hit_fx[1].age==2);
     doom_world_reset(&world, 2);
     assert(world.generation == 2 && world.projectiles[0].state == DOOM_PROJECTILE_FREE);
+    assert(!world.hit_fx[0].active && !world.hit_fx[1].active);
     damage_calls = 0;
     assert(doom_world_fire(&world, DOOM_BFG, start, dir));
     doom_world_tick(&world, &player, start, 56, &host);
@@ -88,6 +105,21 @@ int main(void)
     for (i = 0; i < 16; ++i)
         doom_world_tick(&world, &player, start, 56, &host);
     assert(aim_calls == 40 && damage_calls == 41 && !world.errors);
+    for (i = 0; i < DOOM_WORLD_MAX_BFG_HIT_FX; ++i)
+        assert(world.bfg_hit_fx[i].active && world.bfg_hit_fx[i].age == 0 &&
+               !strcmp(doom_world_bfg_hit_sprite(&world.bfg_hit_fx[i]), "BFE2A0"));
+    for (i = 0; i < 8; ++i)
+        doom_world_tick(&world, &player, start, 56, &host);
+    assert(!strcmp(doom_world_bfg_hit_sprite(&world.bfg_hit_fx[0]), "BFE2B0"));
+    for (i = 8; i < 32; ++i)
+        doom_world_tick(&world, &player, start, 56, &host);
+    assert(!world.bfg_hit_fx[0].active && !doom_world_bfg_hit_sprite(&world.bfg_hit_fx[0]));
+    assert(doom_world_drain_impact_sounds(&world, sounds, 3) == 1 &&
+           !strcmp(sounds[0].lump, "DSRXPLOD"));
+    assert(doom_world_fire(&world, DOOM_PLASMA, start, dir));
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(doom_world_drain_impact_sounds(&world, sounds, 3) == 1 &&
+           !strcmp(sounds[0].lump, "DSFIRXPL"));
     doom_world_reset(&world, 3);
     for (i = 0; i < DOOM_WORLD_MAX_PROJECTILES; i++)
         assert(doom_world_fire(&world, DOOM_PLASMA, start, dir));

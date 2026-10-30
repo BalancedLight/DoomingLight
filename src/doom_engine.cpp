@@ -1,4 +1,5 @@
 #include "doom_engine.h"
+#include "doom_menu_guard.h"
 #include "doom_hud_host.h"
 #include "doom_viewmodel.h"
 #include "doom_combat.h"
@@ -133,9 +134,11 @@ struct DoomEngine {
     ULONGLONG next_hud_attempt = 0;
     bool health_static_ready = false;
     bool jump_static_ready = false;
+    bool parkour_static_ready = false;
+    bool stock_profile = false, cheats_enabled = true;
     bool interaction_static_ready = false;
     bool player_static_ready = false;
-    int classic = 0, bilinear_filtering = 0; float incoming = 1, outgoing = 1;
+    int classic = 0, bilinear_filtering = 0, dynamic_lights = 1; float incoming = 1, outgoing = 1;
     bool in_update_scope() const { return update_depth && game_thread == GetCurrentThreadId(); }
     void *game_object() const { return game ? *reinterpret_cast<void **>(game + 0x1D07F88) : nullptr; }
     void *local_player() const { void *g = game_object(); return g ? reinterpret_cast<GetPlayer>(game + 0x3C2D90)(g) : nullptr; }
@@ -283,13 +286,22 @@ char __fastcall keyboard_hook(void *input, int key, unsigned char pressed, unsig
 #if defined(DOOM_MODE_LAB)
     developer_shortcut = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 #endif
-    const bool slot_capture=eligible && !e->death_wait && !fire_capture && !developer_shortcut && key >= 2 && key <= 10;
-    const bool captured=fire_capture || slot_capture || (e->death_wait && eligible && space_key);
+    bool music_digit=false;
+    if (eligible && e->cheats_enabled && !e->death_wait && !developer_shortcut &&
+        e->player && key>=2 && key<=11) {
+        DoomPlayer pending=*e->player;
+        for (unsigned i=0; i<e->cheat_count && i<e->cheats.size(); ++i)
+            doom_cheat_char(&pending,e->cheats[i],nullptr,nullptr);
+        music_digit=doom_cheat_wants_music_digit(&pending)!=0;
+    }
+    const bool slot_capture=eligible && !e->death_wait && !fire_capture && !developer_shortcut &&
+        !music_digit && key >= 2 && key <= 10;
+    const bool captured=fire_capture || slot_capture || music_digit || (e->death_wait && eligible && space_key);
     if (!eligible) { e->keyboard_fire=false; e->fire=false; }
-    if (fire_capture) e->keyboard_fire=!e->death_wait && !e->death_committed && pressed != 0;
+    if (fire_capture) e->keyboard_fire=!music_digit && !e->death_wait && !e->death_committed && pressed != 0;
     if (slot_capture && pressed && key <= 8 && !e->swallowed[static_cast<size_t>(key)])
         e->selected_slot = key - 1;
-    if (eligible && pressed && e->cheat_count < e->cheats.size()) {
+    if (eligible && e->cheats_enabled && pressed && e->cheat_count < e->cheats.size()) {
         UINT vk = MapVirtualKeyW(static_cast<UINT>(key), MAPVK_VSC_TO_VK);
         if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9'))
             e->cheats[e->cheat_count++] = static_cast<char>(vk);
@@ -371,6 +383,35 @@ static void *current_player_level(DoomEngine *e) {
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) { level = nullptr; }
     return level;
+}
+static void *owned_controller(DoomEngine *e,void *actor,size_t offset,unsigned vtable_rva) {
+    void *controller=field<void *>(actor,offset);
+    if (!controller || field<void *>(controller,0)!=e->game+vtable_rva) return nullptr;
+    auto **v=*reinterpret_cast<void ***>(controller);
+    if (v[4]!=e->game+0x106b80 || reinterpret_cast<GetPlayer>(v[4])(controller)!=actor) return nullptr;
+    return controller;
+}
+static int current_parkour(DoomEngine *e, void *actor,DoomEngineFrame *frame) {
+    if (!e->parkour_static_ready || !actor || !e->in_update_scope()) return 0;
+    __try {
+        if (actor!=e->local_player() || current_player_level(e)!=e->level) return 0;
+        void *move=owned_controller(e,actor,0xbc0,0x180b368);
+        void *edge=owned_controller(e,actor,0xc80,0x1808d88);
+        void *ladder=owned_controller(e,actor,0xbf8,0x180a4c8);
+        frame->move_state=move ? field<uint32_t>(move,0x1c0) : 0;
+        frame->edge_active=edge && field<unsigned char>(edge,0x10)!=0;
+        frame->edge_state=edge ? field<uint32_t>(edge,0x1fc) : 0;
+        frame->ladder_active=ladder && field<unsigned char>(ladder,0x10)!=0;
+        if (actor!=e->local_player() || current_player_level(e)!=e->level) return 0;
+        if (frame->edge_active) {
+            const unsigned state=frame->edge_state;
+            if (state==1 || state==2 || state==3 || state==11 || state==12 || state==14 || state==15)
+                return 2;
+            return 1;
+        }
+        if (frame->ladder_active) return 1;
+        return frame->move_state>=1 && frame->move_state<=23 ? 1 : 0;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 extern "C" void *doom_engine_level(DoomEngine *e) {
     if (!e || !e->game || !e->get_level) return nullptr;
@@ -522,6 +563,16 @@ extern "C" int doom_engine_texture_filtering(DoomEngine *e) {
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     return e->bilinear_filtering;
 }
+extern "C" void doom_engine_set_dynamic_lights(DoomEngine *e, int enabled) {
+    if (!e) return;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    e->dynamic_lights=enabled ? 1 : 0;
+}
+extern "C" int doom_engine_dynamic_lights(DoomEngine *e) {
+    if (!e) return 0;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    return e->dynamic_lights;
+}
 extern "C" void doom_engine_set_fire_key(DoomEngine *e, int virtual_key) {
     if (!e || virtual_key < 1 || virtual_key > 254) return;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
@@ -529,6 +580,13 @@ extern "C" void doom_engine_set_fire_key(DoomEngine *e, int virtual_key) {
         e->keyboard_fire = false;
         e->fire_key = virtual_key;
     }
+}
+extern "C" void doom_engine_set_cheats_enabled(DoomEngine *e, int enabled) {
+    if (!e) return;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    const bool value=enabled!=0;
+    if (value!=e->cheats_enabled) { e->cheat_count=0; e->cheats.fill(0); }
+    e->cheats_enabled=value;
 }
 extern "C" int doom_engine_initialize(DoomEngine *e) {
     if (!e) return 0;
@@ -538,6 +596,7 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
     bool stock = hash_file(game,game_hash) && hash_file(engine,engine_hash);
     bool tools = !stock && hash_file(game,tools_game_hash) && hash_file(engine,tools_engine_hash);
     if (!stock && !tools) return 0;
+    e->stock_profile=stock;
     e->game = reinterpret_cast<unsigned char *>(game);
     e->engine_module = engine;
     e->get_level = reinterpret_cast<GetLevel>(GetProcAddress(engine,
@@ -586,6 +645,7 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
     auto move_table = reinterpret_cast<void **>(e->game + 0x180B368);
     e->jump_static_ready = move_table[22] == e->game + 0xCD92D0 &&
         !std::memcmp(e->game+0xCD92D0,jump_prefix,sizeof(jump_prefix));
+    e->parkour_static_ready=stock && e->jump_static_ready;
     static const unsigned char action_prefix[] =
         {0x48,0x8b,0xc4,0x55,0x53,0x57,0x41,0x54,0x48,0x8d,0x68,0xa1,0x48,0x81,0xec,0xc8};
     auto action_table = reinterpret_cast<void **>(e->game + 0x17DEF68);
@@ -670,6 +730,8 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
     }
     if (!e->active) { doom_engine_deactivate(e); return 0; }
 #if defined(DOOM_MODE_LAB)
+    if (!doom_menu_guard_start(e->game,e->stock_profile ? 1 : 0))
+        OutputDebugStringA("Doom Mode Lab: player menu control unavailable\n");
     e->death_presentation_started=doom_death_presentation_start(e->game,e->engine_module)!=0;
     if (!e->death_presentation_started)
         OutputDebugStringA("Doom Mode Lab: death camera unavailable\n");
@@ -689,6 +751,7 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
 extern "C" void doom_engine_deactivate(DoomEngine *e) {
     if (!e) return;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    (void)doom_menu_guard_stop();
 #if defined(DOOM_MODE_LAB)
     if (e->death_presentation_started && e->in_update_scope() &&
         doom_death_presentation_stop()) e->death_presentation_started=false;
@@ -767,6 +830,7 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
         e->last_actor=actor; e->native_alive=native_alive; e->native_alive_known=true;
     }
     frame->paused=!has_vitals || !e->gameplay();
+    frame->parkour=!frame->paused && native_alive ? current_parkour(e,actor,frame) : 0;
     if (frame->paused) {
         e->fire=false; e->keyboard_fire=false;
         e->death_space_request=false;
@@ -881,6 +945,12 @@ extern "C" unsigned doom_engine_drain_damage_observations(DoomEngine *e, DoomDam
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     return doom_combat_drain_observations(e->combat,out,capacity);
 }
+extern "C" unsigned doom_engine_drain_impacts(DoomEngine *e, DoomHitscanImpact *out, unsigned capacity) {
+    if (!e || !out || !capacity) return 0;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    if (!e->in_update_scope()) return 0;
+    return doom_combat_drain_impacts(e->combat,out,capacity);
+}
 extern "C" int doom_engine_world_bind(DoomEngine *e, DoomWorldHost *host) {
     if (!e || !host) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
@@ -927,7 +997,8 @@ extern "C" int doom_engine_world_sprites_open(DoomEngine *e) {
         GetModuleHandleW(L"engine_x64_rwdi.dll")!=e->engine_module) return 0;
     if (e->world_renderer)
         return e->world_renderer_level==e->level && e->world_renderer_generation==e->generation;
-    e->world_renderer=doom_world_renderer_create(e->engine_module,e->level,e->generation);
+    e->world_renderer=doom_world_renderer_create(e->engine_module,e->level,e->generation,
+                                                e->bilinear_filtering);
     if (!e->world_renderer) return 0;
     e->world_renderer_level=e->level;
     e->world_renderer_generation=e->generation;
@@ -937,7 +1008,7 @@ extern "C" int doom_engine_world_sprites_open(DoomEngine *e) {
 #endif
 }
 extern "C" uint32_t doom_engine_world_sprite_add(DoomEngine *e, const uint8_t *rgba,
-                                                 unsigned edge, DoomVec3 position, float size_metres) {
+                                                 unsigned edge, DoomVec3 position, float size_metres, unsigned flags) {
 #if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
     if (!e || !rgba) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
@@ -946,9 +1017,9 @@ extern "C" uint32_t doom_engine_world_sprite_add(DoomEngine *e, const uint8_t *r
         current_player_level(e)!=e->level) return 0;
     const float p[3]={position.x/DOOM_WORLD_UNITS_PER_METRE,
         position.z/DOOM_WORLD_UNITS_PER_METRE,position.y/DOOM_WORLD_UNITS_PER_METRE};
-    return doom_world_renderer_add(e->world_renderer,e->level,e->generation,rgba,edge,p,size_metres);
+    return doom_world_renderer_add(e->world_renderer,e->level,e->generation,rgba,edge,p,size_metres,flags);
 #else
-    (void)e; (void)rgba; (void)edge; (void)position; (void)size_metres; return 0;
+    (void)e; (void)rgba; (void)edge; (void)position; (void)size_metres; (void)flags; return 0;
 #endif
 }
 extern "C" int doom_engine_world_sprite_move(DoomEngine *e, uint32_t token, DoomVec3 position) {
@@ -1020,7 +1091,7 @@ extern "C" int doom_engine_present(DoomEngine *e, const uint8_t *rgba, unsigned 
 }
 extern "C" int doom_engine_present_layers(DoomEngine *e, const uint8_t *weapon,
                                            const uint8_t *status, const uint8_t *message,
-                                           float hud_scale, float weapon_scale) {
+                                           float hud_scale, float weapon_scale, float weapon_x, float weapon_y) {
     if (!e || !weapon || !status || !message) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active || !e->in_update_scope() || !e->level ||
@@ -1033,5 +1104,5 @@ extern "C" int doom_engine_present_layers(DoomEngine *e, const uint8_t *weapon,
     }
     if (e->hud) doom_hud_host_set_filtering(e->hud,e->bilinear_filtering);
     return e->hud && doom_hud_host_update_layers(e->hud, e->level, e->generation,
-        weapon, status, message, hud_scale, weapon_scale);
+        weapon, status, message, hud_scale, weapon_scale, weapon_x, weapon_y);
 }

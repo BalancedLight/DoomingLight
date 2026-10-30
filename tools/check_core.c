@@ -2,7 +2,7 @@
 #include "doom_core.h"
 #include <assert.h>
 
-static int attacks, spread_seen;
+static int attacks, spread_seen, music_count, music_track;
 static void collect_event(void *context, const DoomEvent *event)
 {
     (void)context;
@@ -11,6 +11,11 @@ static void collect_event(void *context, const DoomEvent *event)
         ++attacks;
         if (event->vertical_spread != 0)
             spread_seen = 1;
+    }
+    else if (event->type == DOOM_EVENT_MUSIC)
+    {
+        ++music_count;
+        music_track = event->value;
     }
 }
 static void cheat(DoomPlayer *player, const char *text)
@@ -34,6 +39,16 @@ int main(void)
     assert(player.god && doom_damage(&player, 50) == 0);
     cheat(&player, "IDFA");
     assert(player.ammo[0] == 200 && player.max_ammo[0] == 200);
+    cheat(&player, "IDMUS");
+    assert(doom_cheat_wants_music_digit(&player));
+    cheat(&player, "3");
+    assert(doom_cheat_wants_music_digit(&player));
+    cheat(&player, "5");
+    assert(!doom_cheat_wants_music_digit(&player) && music_count == 1 && music_track == 35);
+    cheat(&player, "IDMUSX");
+    assert(!doom_cheat_wants_music_digit(&player));
+    cheat(&player, "12");
+    assert(music_count == 1);
 
     doom_reset(&player, 1);
     assert(player.owned_mask & (1u << DOOM_SUPER_SHOTGUN));

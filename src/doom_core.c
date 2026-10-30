@@ -492,13 +492,25 @@ static int ends(const DoomPlayer *p, const char *s)
     size_t n = strlen(s);
     return p->cheat_len >= n && !memcmp(p->cheat + p->cheat_len - n, s, n);
 }
+int doom_cheat_wants_music_digit(const DoomPlayer *p)
+{
+    if (!p || p->cheat_len >= sizeof(p->cheat))
+        return 0;
+    if (ends(p, "IDMUS"))
+        return 1;
+    return p->cheat_len >= 6 &&
+           !memcmp(p->cheat + p->cheat_len - 6, "IDMUS", 5) &&
+           isdigit((unsigned char)p->cheat[p->cheat_len - 1]);
+}
 void doom_cheat_char(DoomPlayer *p, char ch, DoomEventFn emit, void *ctx)
 {
     unsigned i;
     int code = 0;
+    int music_digit_pending;
     if (!p || !isalnum((unsigned char)ch))
         return;
     ch = (char)toupper((unsigned char)ch);
+    music_digit_pending = doom_cheat_wants_music_digit(p) && !ends(p, "IDMUS");
     if (p->cheat_len == sizeof(p->cheat) - 1)
     {
         memmove(p->cheat, p->cheat + 1, --p->cheat_len);
@@ -533,9 +545,7 @@ void doom_cheat_char(DoomPlayer *p, char ch, DoomEventFn emit, void *ctx)
         p->invulnerability_tics = 1;
         code = 3;
     }
-    else if (p->cheat_len >= 7 && !memcmp(p->cheat + p->cheat_len - 7, "IDMUS", 5) &&
-             isdigit((unsigned char)p->cheat[p->cheat_len - 2]) &&
-             isdigit((unsigned char)p->cheat[p->cheat_len - 1]))
+    else if (music_digit_pending && isdigit((unsigned char)ch))
     {
         int track = (p->cheat[p->cheat_len - 2] - '0') * 10 + p->cheat[p->cheat_len - 1] - '0';
         send(emit, ctx, DOOM_EVENT_MUSIC, track, p->weapon, 0, 0, 0);

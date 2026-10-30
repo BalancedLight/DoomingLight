@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "doom_core.h"
 #include "doom_world.h"
+#include "doom_world_visual_flags.h"
 #include "doom_deaths.h"
 #include "doom_combat.h"
 
@@ -27,7 +28,9 @@ enum DoomEngineCapability {
 typedef struct DoomEngineFrame {
     uint32_t map_generation;
     int ready, paused, alive, respawn, fire, interact_failed;
-    int doom_dead, death_commit;
+    int doom_dead, death_commit, parkour;
+    unsigned move_state, edge_state;
+    int edge_active, ladder_active;
     int weapon_select;
     int weapon_slot;
     unsigned cheat_count;
@@ -54,7 +57,10 @@ void doom_engine_reset_damage(DoomEngine *engine);
 void doom_engine_configure(DoomEngine *engine, int classic, float incoming, float outgoing);
 void doom_engine_set_texture_filtering(DoomEngine *engine, int bilinear);
 int doom_engine_texture_filtering(DoomEngine *engine);
+void doom_engine_set_dynamic_lights(DoomEngine *engine, int enabled);
+int doom_engine_dynamic_lights(DoomEngine *engine);
 void doom_engine_set_fire_key(DoomEngine *engine, int virtual_key);
+void doom_engine_set_cheats_enabled(DoomEngine *engine, int enabled);
 int doom_engine_initialize(DoomEngine *engine);
 int doom_engine_activate(DoomEngine *engine, uint32_t map_generation);
 void doom_engine_deactivate(DoomEngine *engine);
@@ -64,6 +70,7 @@ const char *doom_engine_attack_reason(DoomEngine *engine);
 void doom_engine_attack_counts(DoomEngine *engine, unsigned *actors, unsigned *tested, unsigned *hit);
 int doom_engine_damage_observation(DoomEngine *engine, DoomDamageObservation *out);
 unsigned doom_engine_drain_damage_observations(DoomEngine *engine, DoomDamageObservation *out, unsigned capacity);
+unsigned doom_engine_drain_impacts(DoomEngine *engine, DoomHitscanImpact *out, unsigned capacity);
 /* Bind and unbind within the same scoped game update. */
 int doom_engine_world_bind(DoomEngine *engine, DoomWorldHost *host);
 void doom_engine_world_unbind(DoomEngine *engine);
@@ -71,7 +78,7 @@ void doom_engine_world_unbind(DoomEngine *engine);
  * Calls require the currently validated player/level and game-update scope. */
 int doom_engine_world_sprites_open(DoomEngine *engine);
 uint32_t doom_engine_world_sprite_add(DoomEngine *engine, const uint8_t *rgba,
-                                      unsigned edge, DoomVec3 position, float size_metres);
+                                      unsigned edge, DoomVec3 position, float size_metres, unsigned flags);
 int doom_engine_world_sprite_update(DoomEngine *engine, uint32_t token,
                                     const uint8_t *rgba, unsigned edge);
 int doom_engine_world_sprite_move(DoomEngine *engine, uint32_t token, DoomVec3 position);
@@ -81,7 +88,7 @@ int doom_engine_present(DoomEngine *engine, const uint8_t *rgba, unsigned width,
                         unsigned height, float hud_scale);
 int doom_engine_present_layers(DoomEngine *engine, const uint8_t *weapon,
                                 const uint8_t *status, const uint8_t *message,
-                                float hud_scale, float weapon_scale);
+                               float hud_scale, float weapon_scale, float weapon_x, float weapon_y);
 
 #ifdef __cplusplus
 }

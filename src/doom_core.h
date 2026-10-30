@@ -97,6 +97,8 @@ extern "C"
                       void *context);
     int doom_damage(DoomPlayer *player, int damage);
     int doom_damage_from(DoomPlayer *player, int damage, int attacker_side);
+    /* True while IDMUS is waiting for either track-number digit. */
+    int doom_cheat_wants_music_digit(const DoomPlayer *player);
     void doom_cheat_char(DoomPlayer *player, char ch, DoomEventFn emit, void *context);
     DoomDrop doom_enemy_killed(DoomPlayer *player);
     int doom_collect(DoomPlayer *player, DoomDrop drop);

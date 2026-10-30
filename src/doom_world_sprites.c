@@ -11,6 +11,20 @@ unsigned doom_world_render_sprites(const DoomWorld *world, DoomSpriteSink sink, 
         if (name && sink(context, DOOM_SPRITE_PROJECTILE, name, projectile->position))
             ++count;
     }
+    for (i = 0; i < DOOM_WORLD_MAX_BFG_HIT_FX; i++)
+    {
+        const DoomBfgHitFx *effect = &world->bfg_hit_fx[i];
+        const char *name = doom_world_bfg_hit_sprite(effect);
+        if (name && sink(context, DOOM_SPRITE_BFG_HIT, name, effect->position))
+            ++count;
+    }
+    for (i = 0; i < DOOM_WORLD_MAX_HIT_FX; i++)
+    {
+        const DoomHitFx *effect = &world->hit_fx[i];
+        const char *name = doom_world_hit_fx_sprite(effect);
+        if (name && sink(context, DOOM_SPRITE_HIT, name, effect->position))
+            ++count;
+    }
     for (i = 0; i < DOOM_WORLD_MAX_PICKUPS; i++)
     {
         const DoomPickup *pickup = &world->pickups[i];

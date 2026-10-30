@@ -20,6 +20,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
@@ -44,6 +46,19 @@ struct HudDeleter { void operator()(DoomHud* p) const { doom_hud_destroy(p); } }
 struct PcmDeleter { void operator()(int16_t* p) const { std::free(p); } };
 using WadPtr = std::unique_ptr<DoomWad, WadDeleter>;
 using HudPtr = std::unique_ptr<DoomHud, HudDeleter>;
+std::vector<uint8_t> readSoundFont(const std::string& path) {
+    if (path.empty()) return {};
+    try {
+        std::ifstream input(std::filesystem::u8path(path),std::ios::binary|std::ios::ate);
+        if (!input) return {};
+        const auto length=input.tellg();
+        if (length<12 || length>256ll*1024ll*1024ll) return {};
+        std::vector<uint8_t> bytes(static_cast<size_t>(length));
+        input.seekg(0,std::ios::beg);
+        if (!input.read(reinterpret_cast<char *>(bytes.data()),static_cast<std::streamsize>(bytes.size()))) return {};
+        return bytes;
+    } catch (...) { return {}; }
+}
 class EngineUpdateScope {
     DoomEngine* engine_;
     bool entered_;
@@ -64,10 +79,12 @@ struct PreparedMusic {
     size_t frames = 0;
     unsigned track = 0;
     uint64_t epoch = 0;
+    bool soundfontFallback = false;
+    bool soundfontUsed = false;
 };
 struct Settings {
-    std::string game = "auto", doom, doom2, music = "doom";
-    bool classic = false, cheats = true, hudFit = true, bilinear = false;
+    std::string game = "auto", doom, doom2, music = "doom", musicSynth = "opl", soundfont;
+    bool classic = false, cheats = true, hudFit = true, bilinear = false, dynamicLights = true;
     int track = 0, hud = 100, weaponScale = 100, incoming = 100, outgoing = 100;
     int musicVolume = 70, effectsVolume = 100;
 };
@@ -98,6 +115,8 @@ struct Runtime {
     uint64_t updateToken = 0, configToken = 0, musicToken = 0;
     uint64_t lastTick = 0, retryMusicAt = 0;
     uint64_t musicEpoch = 0;
+    uint64_t motionSampleAt = 0;
+    float motionX = 0.0f, motionZ = 0.0f, lastMotionSpeed = 0.0f;
 #if defined(DOOM_MODE_LAB)
     uint64_t nextPositionLog = 0;
     std::array<unsigned, DOOM_WEAPON_COUNT> attackLogCount{};
@@ -110,12 +129,17 @@ struct Runtime {
     bool worldDisplayWarned = false;
     bool traceWorld = false;
     unsigned worldTraceCount = 0;
+    uint32_t lastSplashSequence = 0;
+    unsigned splashLogCount = 0;
+    uint64_t lastTraversal = UINT64_MAX;
+    unsigned traversalLogCount = 0;
     std::array<unsigned, DOOM_WORLD_MAX_PROJECTILES> tracedAge{};
     std::array<int, DOOM_WORLD_MAX_PROJECTILES> tracedState{};
 #endif
     uint32_t generation = 0;
     unsigned requestedTrack = 0, playingTrack = 0, resumeTrack = 0;
     bool scope = false, active = false, started = false, haveGeneration = false;
+    bool resetCheatInput = false;
     bool reloadAssets = false, musicPlaying = false, musicOverride = false, requestOverride = false;
     bool bindingWarning = false;
 
@@ -162,16 +186,22 @@ struct Runtime {
     }
     void configuration() {
         const std::string oldMusic = settings.music;
+        const std::string oldSynth = settings.musicSynth, oldFont = settings.soundfont;
+        const bool oldCheats = settings.cheats;
         settings.game = text("game", "auto");
         settings.doom = text("doom_wad", ""); settings.doom2 = text("doom2_wad", "");
         settings.music = text("music", "doom");
+        settings.musicSynth = text("music_synth", "opl");
+        settings.soundfont = text("soundfont", "");
         settings.classic = text("movement", "traversal") == "classic";
         settings.cheats = integer("cheats", 1, 0, 1) != 0;
+        if (oldCheats!=settings.cheats) resetCheatInput=true;
         settings.track = integer("default_track", 0, 0, 49);
         settings.hud = integer("hud_scale", 100, 50, 200);
         settings.hudFit = integer("hud_fit_screen", 1, 0, 1) != 0;
         settings.weaponScale = integer("weapon_scale", 100, 50, 200);
         settings.bilinear = integer("bilinear_filtering", 0, 0, 1) != 0;
+        settings.dynamicLights = integer("dynamic_lights", 1, 0, 1) != 0;
         settings.incoming = integer("incoming_damage", 100, 10, 500);
         settings.outgoing = integer("outgoing_damage", 100, 10, 500);
         settings.musicVolume = integer("music_volume", 70, 0, 100);
@@ -179,13 +209,21 @@ struct Runtime {
         doom_engine_configure(engine, settings.classic, settings.incoming / 100.f,
             settings.outgoing / 100.f);
         doom_engine_set_texture_filtering(engine, settings.bilinear);
+        doom_engine_set_dynamic_lights(engine,settings.dynamicLights);
         doom_engine_set_fire_key(engine, integer("fire_key", 162, 1, 254));
+        doom_engine_set_cheats_enabled(engine,settings.cheats);
         doom_audio_music_volume(audio, settings.musicVolume / 100.f);
         (void)doom_audio_weapon_volume(audio, settings.effectsVolume / 100.f);
         if (oldMusic != settings.music) {
             musicOverride = false;
             stopMusic();
             if (active && settings.music == "doom") requestMusic(defaultTrack());
+        } else if ((oldSynth!=settings.musicSynth || oldFont!=settings.soundfont) && active &&
+                   (settings.music=="doom" || musicOverride || requestOverride)) {
+            ++musicEpoch;
+            if (cancelRender) cancelRender->store(true);
+            pendingMusic={};
+            requestMusic(requestedTrack ? requestedTrack : defaultTrack(),musicOverride || requestOverride);
         }
     }
     unsigned defaultTrack() const {
@@ -266,14 +304,27 @@ struct Runtime {
         const uint64_t epoch = musicEpoch;
         cancelRender = std::make_shared<std::atomic<bool>>(false);
         const auto cancel = cancelRender;
+        const bool useSoundFont=settings.musicSynth=="soundfont";
+        const std::string fontPath=settings.soundfont;
         rendering = std::async(std::launch::async,
-            [score = std::move(score), instruments = std::move(instruments), track, epoch, cancel]() {
+            [score = std::move(score), instruments = std::move(instruments), track, epoch, cancel,
+             useSoundFont, fontPath]() {
                 PreparedMusic output;
                 int16_t* pcm = nullptr;
                 auto canceled = [](void* context) -> int {
                     return static_cast<std::atomic<bool>*>(context)->load() ? 1 : 0;
                 };
-                if (doom_synth_render_cancelable(score.data(), score.size(), instruments.data(),
+                if (useSoundFont && !cancel->load()) {
+                    auto font=readSoundFont(fontPath);
+                    if (!font.empty() && !cancel->load() &&
+                        doom_synth_render_sf2_cancelable(score.data(),score.size(),font.data(),font.size(),
+                            &pcm,&output.frames,44100,canceled,cancel.get()))
+                        output.pcm.reset(pcm);
+                    output.soundfontFallback=!output.pcm && !cancel->load();
+                    output.soundfontUsed=output.pcm!=nullptr;
+                }
+                if (!output.pcm && !cancel->load() &&
+                    doom_synth_render_cancelable(score.data(), score.size(), instruments.data(),
                         instruments.size(), &pcm, &output.frames, 44100, canceled, cancel.get()))
                     output.pcm.reset(pcm);
                 output.track = track;
@@ -294,6 +345,8 @@ struct Runtime {
         if (rendering.valid() && rendering.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             PreparedMusic result = rendering.get();
             if (result.track != requestedTrack || result.epoch != musicEpoch) { requestMusic(requestedTrack, requestOverride); return; }
+            if (result.soundfontFallback)
+                log("WARN","Dooming Light could not load the SoundFont; using Classic OPL.");
             if (!result.pcm) {
                 log("WARN", "Dooming Light could not prepare the selected music track.");
                 requestOverride = false;
@@ -314,6 +367,10 @@ struct Runtime {
                     settings.musicVolume / 100.f)) {
                 (void)pendingMusic.pcm.release();
                 musicPlaying = true;
+                char message[112]{};
+                std::snprintf(message,sizeof(message),"Dooming Light music: synth=%s track=%u",
+                    pendingMusic.soundfontUsed ? "SoundFont" : "Classic OPL",pendingMusic.track);
+                log("INFO",message);
                 playingTrack = pendingMusic.track;
                 resumeTrack = 0;
                 if (requestOverride) musicOverride = true;
@@ -332,11 +389,11 @@ struct Runtime {
             pendingMusic = {};
         }
     }
-    void sound(const char* name) {
+    void sound(const char* name, float gain = 1.0f) {
         DoomSound effect{};
         if (audio && assets.wad && doom_wad_sound(assets.wad.get(), name, &effect)) {
             (void)doom_audio_play_pcm(audio, effect.samples, effect.count, effect.rate,
-                settings.effectsVolume / 100.f);
+                settings.effectsVolume / 100.f * std::clamp(gain,0.0f,1.0f));
             doom_sound_free(&effect);
         }
     }
@@ -358,6 +415,27 @@ struct Runtime {
     void stopWeaponSound() {
         doom_audio_weapon_stop(audio);
         sawStartupUntil = 0;
+    }
+    void resetMotion() {
+        motionSampleAt=0; lastMotionSpeed=0;
+        doom_hud_motion_reset(assets.hud.get());
+    }
+    float movementSpeed(uint64_t timestamp, bool movingAllowed) {
+        float x=0, y=0, z=0, speed=0;
+        if (!movingAllowed || !doom_engine_position(engine,&x,&y,&z)) {
+            resetMotion(); return 0;
+        }
+        if (motionSampleAt && timestamp==motionSampleAt) return lastMotionSpeed;
+        if (motionSampleAt && timestamp>motionSampleAt && timestamp-motionSampleAt<=250) {
+            const float seconds=static_cast<float>(timestamp-motionSampleAt)/1000.0f;
+            const float dx=x-motionX, dz=z-motionZ;
+            speed=std::sqrt(dx*dx+dz*dz)/seconds;
+            if (!std::isfinite(speed) || speed>24.0f) {
+                doom_hud_motion_reset(assets.hud.get()); speed=0;
+            }
+        }
+        motionX=x; motionZ=z; motionSampleAt=timestamp; lastMotionSpeed=speed;
+        return speed;
     }
 #if defined(DOOM_MODE_LAB)
     bool projectileBasis(DoomWorldFrame& frame) const {
@@ -408,6 +486,33 @@ struct Runtime {
             tracedState[i]=state;
         }
     }
+    void logSplash() {
+        const uint32_t latest=world.world.splash_sequence;
+        if (latest<=lastSplashSequence) return;
+        const uint32_t first=latest-lastSplashSequence>DOOM_SPLASH_HISTORY
+            ? latest-DOOM_SPLASH_HISTORY+1u : lastSplashSequence+1u;
+        for (uint32_t sequence=first; sequence<=latest && splashLogCount<16; ++sequence) {
+            const DoomSplashTelemetry& t=world.world.splash_history[(sequence-1u)%DOOM_SPLASH_HISTORY];
+            if (t.sequence!=sequence) continue;
+            char message[360]{};
+            std::snprintf(message,sizeof(message),
+                "Doom lab blast: seq=%u direct=%llu direct_damage=%d direct_result=%d query=%u candidates=%u capacity=%u outside=%u blocked=%u visible=%u damaged=%u failed=%u query_failed=%u impact=%.2f,%.2f,%.2f",
+                sequence,static_cast<unsigned long long>(t.direct_target),t.direct_damage,t.direct_result,
+                t.query_ok,t.candidates,t.at_capacity,t.outside,t.blocked,t.visible,t.damaged,t.damage_failed,t.query_failed,
+                static_cast<double>(t.impact.x/32.0f),static_cast<double>(t.impact.y/32.0f),static_cast<double>(t.impact.z/32.0f));
+            log("INFO",message); ++splashLogCount;
+            for (unsigned i=0; i<t.sample_count && i<DOOM_SPLASH_SAMPLE_LIMIT; ++i) {
+                const DoomSplashSample& s=t.samples[i];
+                std::snprintf(message,sizeof(message),
+                    "Doom lab blast target: seq=%u target=%llu center_m=%.3f edge_m=%.3f radius_m=%.3f damage=%d state=%d",
+                    sequence,static_cast<unsigned long long>(s.target),
+                    static_cast<double>(s.center_distance/32.0f),static_cast<double>(s.edge_distance/32.0f),
+                    static_cast<double>(s.radius/32.0f),s.damage,static_cast<int>(s.state));
+                log("INFO",message);
+            }
+        }
+        lastSplashSequence=latest;
+    }
     void logDamage(const DoomDamageObservation& observation) const {
         char before[32] = "unavailable", after[32] = "unavailable", message[224]{};
         if (observation.before_valid)
@@ -415,8 +520,9 @@ struct Runtime {
         if (observation.after_valid)
             std::snprintf(after, sizeof(after), "%.3f", static_cast<double>(observation.after));
         std::snprintf(message, sizeof(message),
-            "Doom lab damage: weapon=%d target=%d native=%.3f before=%s after=%s removed=%d",
+            "Doom lab damage: weapon=%d target=%d native=%.3f physics=%.3f before=%s after=%s removed=%d",
             observation.weapon, observation.target_id, static_cast<double>(observation.native_damage),
+            static_cast<double>(observation.physics_damage),
             before, after, observation.removed);
         log("INFO", message);
     }
@@ -493,6 +599,7 @@ struct Runtime {
     }
     void deactivate() {
         active = false;
+        resetMotion();
         doom_pickup_feedback_reset(&pickupFeedback);
         pickupSoundQueued = false;
         sawStartupUntil = 0;
@@ -514,6 +621,8 @@ struct Runtime {
 #if defined(DOOM_MODE_LAB)
             attackLogCount.fill(0); damageLogCount.fill(0); inputLogCount = 0; previousFire = previousPaused = -1;
             worldTraceCount=0; tracedAge.fill(0); tracedState.fill(DOOM_PROJECTILE_FREE);
+            lastSplashSequence=0; splashLogCount=0;
+            lastTraversal=UINT64_MAX; traversalLogCount=0;
 #endif
             musicOverride = false;
             beginAssets();
@@ -553,6 +662,19 @@ struct Runtime {
             log("INFO", message);
         }
         previousFire = frame.fire; previousPaused = frame.paused;
+        const uint64_t traversal=static_cast<uint64_t>(frame.move_state) |
+            (static_cast<uint64_t>(frame.edge_state)<<16) |
+            (static_cast<uint64_t>(frame.edge_active!=0)<<48) |
+            (static_cast<uint64_t>(frame.ladder_active!=0)<<49) |
+            (static_cast<uint64_t>(frame.parkour)<<50);
+        if (traversal!=lastTraversal && traversalLogCount++<64) {
+            char message[192]{};
+            std::snprintf(message,sizeof(message),
+                "Doom lab traversal: kind=%d move=%u edge=%u edge_active=%d ladder=%d",
+                frame.parkour,frame.move_state,frame.edge_state,frame.edge_active,frame.ladder_active);
+            log("INFO",message);
+        }
+        lastTraversal=traversal;
         if (now() >= nextPositionLog) {
             float x = 0, y = 0, z = 0;
             if (doom_engine_position(engine, &x, &y, &z)) {
@@ -563,20 +685,23 @@ struct Runtime {
             nextPositionLog = now() + 500;
         }
 #endif
-        if (frame.paused) { stopWeaponSound(); lastTick = 0; return; }
+        if (frame.paused) { stopWeaponSound(); resetMotion(); lastTick = 0; return; }
         if (frame.respawn) {
             stopWeaponSound();
+            resetMotion();
             doom_pickup_feedback_reset(&pickupFeedback);
             doom_reset(&player, player.doom2);
 #if defined(DOOM_MODE_LAB)
             doom_world_runtime_reset(&world, generation);
             worldWarnings = hostWarnings = 0;
+            lastSplashSequence=0; splashLogCount=0;
 #endif
             doom_engine_reset_damage(engine);
             musicOverride = false;
             if (settings.music == "doom") requestMusic(defaultTrack());
         }
         if (!frame.alive) player.health = 0;
+        if (resetCheatInput) { player.cheat_len=0; player.cheat[0]=0; resetCheatInput=false; }
         if (player.health > 0 && !frame.doom_dead) {
             if (frame.weapon_select >= 0 && frame.weapon_select < DOOM_WEAPON_COUNT)
                 doom_select_weapon(&player, static_cast<DoomWeapon>(frame.weapon_select));
@@ -589,6 +714,7 @@ struct Runtime {
         const uint64_t timestamp = now();
         const unsigned frameElapsed = lastTick && timestamp >= lastTick
             ? static_cast<unsigned>(std::min<uint64_t>(timestamp - lastTick, 250)) : 0;
+        const float speed=movementSpeed(timestamp,player.health>0 && !frame.doom_dead);
         doom_pickup_feedback_begin_frame(&pickupFeedback, frameElapsed);
         pickupSoundQueued = false;
         if (lastTick && timestamp >= lastTick) {
@@ -614,7 +740,20 @@ struct Runtime {
                         engine, static_cast<DoomWeapon>(player.weapon));
             }
             doom_world_runtime_advance(&world, &player, elapsed, &worldFrame, onDoomEvent, onPickup, this);
+            DoomHitscanImpact hitEffects[64]{};
+            const unsigned hitCount=doom_engine_drain_impacts(engine,hitEffects,64);
+            for (unsigned i=0; i<hitCount; ++i)
+                doom_world_add_hit_fx(&world.world,hitEffects[i].kind,hitEffects[i].position);
+            DoomImpactSound impacts[128]{};
+            const unsigned impactCount=doom_world_drain_impact_sounds(&world.world,impacts,128);
+            for (unsigned i=0; i<impactCount; ++i) {
+                const float dx=(impacts[i].position.x-worldFrame.player_position.x)/32.0f;
+                const float dy=(impacts[i].position.y-worldFrame.player_position.y)/32.0f;
+                const float distance=std::sqrt(dx*dx+dy*dy);
+                sound(impacts[i].lump,std::clamp((38.0f-distance)/32.0f,0.0f,1.0f));
+            }
             logWorld();
+            logSplash();
             if (hostBound) doom_engine_world_unbind(engine);
             DoomDamageObservation observations[64]{};
             const unsigned observationCount=doom_engine_drain_damage_observations(engine, observations, 64);
@@ -654,11 +793,15 @@ struct Runtime {
         if (pickupSoundQueued) sound("DSITEMUP");
         if (player.weapon != DOOM_CHAINSAW || player.switch_phase == 1 || player.health <= 0)
             stopWeaponSound();
+        float weaponX=0, weaponY=0;
+        doom_hud_motion_update(assets.hud.get(),&player,frameElapsed,speed,
+            frame.parkour==2 ? 200.0f : frame.parkour==1 ? 12.0f : 0.0f,&weaponX,&weaponY);
         if (doom_hud_render_layers(assets.hud.get(), &player,
                 weaponPixels.data(), weaponPixels.size(), statusPixels.data(), statusPixels.size(),
                 messagePixels.data(), messagePixels.size(), doom_pickup_feedback_text(&pickupFeedback)))
             (void)doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),
-                messagePixels.data(), settings.hudFit ? 0.f : settings.hud / 100.f, settings.weaponScale / 100.f);
+                messagePixels.data(), settings.hudFit ? 0.f : settings.hud / 100.f,
+                settings.weaponScale / 100.f,weaponX,weaponY);
         musicTick();
     }
     DlumaStatus prepare(const DlumaApiV1* host) {

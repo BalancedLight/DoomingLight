@@ -15,6 +15,8 @@ See LICENSE and the notices in the source files.
   LGPL-2.1-or-later. Source, license and pinned blob identities are in
   third_party/opl.
 - DLUMA C SDK, setup and package tools: MIT, see LICENSE.DLUMA.
+- TinySoundFont 0.9: Copyright Bernhard Schelling and Steve Folta, MIT;
+  see LICENSE.TSF.txt and third_party/tsf for the source and pinned revision.
 - MinHook 1.3.4: Copyright Tsuda Kageyu and contributors, BSD 2-Clause;
   see LICENSE.MINHOOK.txt and third_party/minhook.
 

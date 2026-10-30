@@ -13,6 +13,12 @@ int doom_synth_render(const uint8_t *music, size_t music_size,
                       const uint8_t *genmidi, size_t genmidi_size,
                       int16_t **pcm, size_t *frames, unsigned rate);
 typedef int (*DoomSynthCancelFn)(void *context);
+/* Font bytes are caller-owned for the duration of this worker-thread call.
+ * The resulting stereo PCM is malloc-owned by the caller. */
+int doom_synth_render_sf2_cancelable(const uint8_t *music, size_t music_size,
+                                     const uint8_t *font, size_t font_size,
+                                     int16_t **pcm, size_t *frames, unsigned rate,
+                                     DoomSynthCancelFn canceled, void *context);
 int doom_synth_render_cancelable(const uint8_t *music, size_t music_size,
                                  const uint8_t *genmidi, size_t genmidi_size,
                                  int16_t **pcm, size_t *frames, unsigned rate,

@@ -13,18 +13,36 @@ struct DoomHud {
     size_t image_bytes;
     double bob_phase, filtered_speed, bob_amplitude;
     double bob_target_x, bob_target_y, bob_x, bob_y, parkour_y;
+    float hand_progress;
+    unsigned hand_hold_ms;
+    int hand_side, hand_pickup;
 };
 
-void doom_hud_motion_reset(DoomHud *hud)
+void doom_hud_bob_reset(DoomHud *hud)
 {
     if (!hud) return;
     hud->bob_phase = 0;
     hud->filtered_speed = hud->bob_amplitude = 0;
     hud->bob_target_x = hud->bob_target_y = 0;
-    hud->bob_x = hud->bob_y = hud->parkour_y = 0;
+    hud->bob_x = hud->bob_y = 0;
 }
 
-void doom_hud_bob_reset(DoomHud *hud) { doom_hud_motion_reset(hud); }
+void doom_hud_motion_reset(DoomHud *hud)
+{
+    if (!hud) return;
+    doom_hud_bob_reset(hud);
+    hud->parkour_y = 0;
+    hud->hand_progress = 0; hud->hand_hold_ms = 0; hud->hand_side = 0; hud->hand_pickup = 0;
+}
+
+float doom_hud_lowering(const DoomHud *hud)
+{
+    return hud ? (float)hud->parkour_y : 0.0f;
+}
+int doom_hud_pickup_gesture(const DoomHud *hud)
+{
+    return hud && hud->hand_pickup && (hud->hand_hold_ms || hud->hand_progress>0.0f);
+}
 
 void doom_hud_motion_update(DoomHud *hud, const DoomPlayer *player, unsigned elapsed_ms,
                             float horizontal_speed_mps, float lower_pixels,
@@ -133,6 +151,39 @@ static void draw(DoomHud *hud, HudCanvas *canvas, const char *name, int x, int y
         }
     }
 }
+DoomHudHandResult doom_hud_hand_update(DoomHud *hud, unsigned elapsed_ms,
+                                       int reach_side, int pickup_pulse,
+                                       int interaction_active, int force_hidden,
+                                       int *side, float *offset_y)
+{
+    int requested;
+    float step;
+    if (side) *side = 0;
+    if (offset_y) *offset_y = 0.0f;
+    if (!hud) return force_hidden ? DOOM_HUD_HAND_HIDDEN : DOOM_HUD_HAND_WEAPON;
+    if (elapsed_ms > 250u) elapsed_ms = 250u;
+    if (pickup_pulse) { hud->hand_hold_ms = 400u; hud->hand_pickup = 1; }
+    else if (elapsed_ms >= hud->hand_hold_ms) hud->hand_hold_ms = 0;
+    else hud->hand_hold_ms -= elapsed_ms;
+    requested = reach_side == -1 || reach_side == 1 || interaction_active || hud->hand_hold_ms;
+    if (reach_side == -1 || reach_side == 1) hud->hand_side = reach_side;
+    else if (requested && !hud->hand_side) hud->hand_side = -1;
+    step = (float)elapsed_ms / 180.0f;
+    if (requested) {
+        hud->hand_progress += step;
+        if (hud->hand_progress > 1.0f) hud->hand_progress = 1.0f;
+    } else {
+        hud->hand_progress -= step;
+        if (hud->hand_progress < 0.0f) hud->hand_progress = 0.0f;
+    }
+    if (requested || hud->hand_progress > 0.0f) {
+        if (side) *side = hud->hand_side;
+        if (offset_y) *offset_y = (1.0f - hud->hand_progress) * 74.0f;
+        return DOOM_HUD_HAND_VISIBLE;
+    }
+    hud->hand_side = 0; hud->hand_pickup = 0;
+    return force_hidden ? DOOM_HUD_HAND_HIDDEN : DOOM_HUD_HAND_WEAPON;
+}
 int doom_hud_render_reach(DoomHud *hud, uint8_t *weapon, size_t size, int side)
 {
     const DoomImage *image;
@@ -140,16 +191,16 @@ int doom_hud_render_reach(DoomHud *hud, uint8_t *weapon, size_t size, int side)
     int left, top;
     if (!hud || !weapon || size < 320u * 200u * 4u || (side != -1 && side != 1)) return 0;
     image = patch(hud, "PUNGA0");
-    if (!image || !image->width || !image->height || image->width > 213 || image->height > 112) return 0;
-    width = (image->width * 3u + 1u) / 2u;
-    height = (image->height * 3u + 1u) / 2u;
+    if (!image || !image->width || !image->height || image->width > 320 || image->height > 168) return 0;
+    width = image->width;
+    height = image->height;
     left = side < 0 ? 0 : 320 - (int)width;
     top = 168 - (int)height;
     memset(weapon, 0, 320u * 200u * 4u);
     for (y = 0; y < height; ++y) {
-        unsigned source_y = y * 2u / 3u;
+        unsigned source_y = y;
         for (x = 0; x < width; ++x) {
-            unsigned source_x = x * 2u / 3u;
+            unsigned source_x = x;
             const uint8_t *pixel;
             if (side < 0) source_x = image->width - 1u - source_x;
             pixel = image->rgba + ((size_t)source_y * image->width + source_x) * 4u;

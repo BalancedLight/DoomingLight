@@ -9,6 +9,9 @@
 #include "doom_movement_sampler.h"
 #include "doom_deaths.h"
 #include "doom_combat.h"
+#include "doom_native_pickup.h"
+#include "doom_noclip.h"
+#include "doom_player_voice.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,10 +33,15 @@ enum DoomEngineCapability {
 typedef struct DoomEngineFrame {
     uint32_t map_generation;
     int ready, paused, alive, respawn, fire, interact_failed;
-    int doom_dead, death_commit, parkour;
+    int doom_dead, death_commit, parkour, interaction_active;
+    int noclip, noclip_input, noclip_notice;
     unsigned move_state, edge_state;
     int edge_active, ladder_active;
     unsigned damage_sequence;
+    unsigned jump_sounds;
+    unsigned voice_observation_count;
+    DoomPlayerVoiceObservation voice_observations[64];
+    DoomNoclipDiagnostic noclip_diagnostic;
     int damage_side, damage_amount, body_suppression;
     unsigned damage_thread, update_thread;
     DoomDamageDirectionSnapshot direction;
@@ -68,6 +76,9 @@ int doom_engine_dynamic_lights(DoomEngine *engine);
 void doom_engine_set_fire_key(DoomEngine *engine, int virtual_key);
 void doom_engine_set_cheats_enabled(DoomEngine *engine, int enabled);
 void doom_engine_set_voice_replacement(DoomEngine *engine, int ready);
+int doom_engine_request_noclip(DoomEngine *engine);
+void doom_engine_allow_native_pickups(DoomEngine *engine, int accepting);
+unsigned doom_engine_native_pickups(DoomEngine *engine, DoomNativePickupRecord *out, unsigned capacity);
 int doom_engine_initialize(DoomEngine *engine);
 int doom_engine_activate(DoomEngine *engine, uint32_t map_generation);
 void doom_engine_deactivate(DoomEngine *engine);

@@ -3,7 +3,7 @@
 #include "doom_menu_guard.h"
 #include <assert.h>
 
-static int attacks, spread_seen, music_count, music_track;
+static int attacks, spread_seen, music_count, music_track, cheat_id;
 static void collect_event(void *context, const DoomEvent *event)
 {
     (void)context;
@@ -18,6 +18,8 @@ static void collect_event(void *context, const DoomEvent *event)
         ++music_count;
         music_track = event->value;
     }
+    else if (event->type == DOOM_EVENT_CHEAT)
+        cheat_id = event->value;
 }
 static void cheat(DoomPlayer *player, const char *text)
 {
@@ -28,9 +30,23 @@ int main(void)
 {
     DoomPlayer player;
     unsigned i;
+    {
+        const char *clip = "IDCLIP";
+        for (i = 1; i <= 6; ++i) assert(doom_cheat_is_prefix(clip, i));
+        assert(doom_cheat_is_prefix("idchoppers", 10));
+        assert(doom_cheat_is_prefix("IDMUS", 5));
+        assert(doom_cheat_is_prefix("IDMUS1", 6));
+        assert(doom_cheat_is_prefix("IDMUS12", 7));
+        assert(!doom_cheat_is_prefix("IDMUS1X", 7));
+        assert(!doom_cheat_is_prefix("IDMUS123", 8));
+        assert(!doom_cheat_is_prefix("IDCW", 4));
+        assert(!doom_cheat_is_prefix("W", 1));
+        assert(!doom_cheat_is_prefix("", 0));
+    }
     /* Native combat actions are suppressed while parkour, use and pause remain available. */
     assert(doom_menu_guard_blocks_action(18) && doom_menu_guard_blocks_action(139) &&
-           doom_menu_guard_blocks_action(276) && doom_menu_guard_blocks_action(167));
+           doom_menu_guard_blocks_action(276) && doom_menu_guard_blocks_action(167) &&
+           doom_menu_guard_blocks_action(218));
     assert(!doom_menu_guard_blocks_action(11) && !doom_menu_guard_blocks_action(20) &&
            !doom_menu_guard_blocks_action(54) && !doom_menu_guard_blocks_action(126));
     doom_reset(&player, 0);
@@ -45,6 +61,9 @@ int main(void)
     assert(player.god && doom_damage(&player, 50) == 0);
     cheat(&player, "IDFA");
     assert(player.ammo[0] == 200 && player.max_ammo[0] == 200);
+    cheat_id = 0;
+    cheat(&player, "IDCLIP");
+    assert(cheat_id == DOOM_CHEAT_NOCLIP);
     cheat(&player, "IDMUS");
     assert(doom_cheat_wants_music_digit(&player));
     cheat(&player, "3");
@@ -140,6 +159,38 @@ int main(void)
     player.weapon = DOOM_ROCKET;
     for (i = 0; i < 10; ++i) doom_tick(&player, 1, collect_event, 0);
     assert(player.ammo[DOOM_CELLS] == 300 && player.ammo[DOOM_ROCKETS] == 49);
+
+    /* Suspending combat cannot release a delayed shot or a second burst hit. */
+    doom_reset(&player, 1);
+    player.weapon = DOOM_BFG;
+    attacks = 0;
+    for (i = 0; i < 10; ++i) doom_tick(&player, 1, collect_event, 0);
+    assert(player.cooldown && !attacks);
+    player.face = 1; player.face_index = 4; player.face_tics = 20;
+    player.pending_weapon = DOOM_PISTOL; player.switch_phase = 1; player.weapon_y = 64;
+    doom_cancel_attack(&player);
+    assert(!player.cooldown && !player.fire_delay && !player.flash_tics && !player.face_attack_tics);
+    assert(player.face == 1 && player.face_index == 4 && player.face_tics == 20);
+    assert(player.pending_weapon == DOOM_PISTOL && player.switch_phase == 1 && player.weapon_y == 64);
+    for (i = 0; i < 40; ++i) doom_tick(&player, 0, collect_event, 0);
+    assert(!attacks && player.ammo[DOOM_CELLS] == 300);
+
+    doom_reset(&player, 1);
+    player.weapon = DOOM_CHAINGUN; attacks = 0;
+    doom_tick(&player, 1, collect_event, 0);
+    assert(attacks == 1 && player.ammo[DOOM_BULLETS] == 199);
+    doom_cancel_attack(&player);
+    for (i = 0; i < 10; ++i) doom_tick(&player, 0, collect_event, 0);
+    assert(attacks == 1 && player.ammo[DOOM_BULLETS] == 199);
+
+    doom_reset(&player, 1);
+    player.weapon = DOOM_CHAINSAW; attacks = 0;
+    doom_tick(&player, 1, collect_event, 0);
+    assert(attacks == 1);
+    doom_cancel_attack(&player);
+    assert(player.weapon_frame == 2);
+    for (i = 0; i < 10; ++i) doom_tick(&player, 0, collect_event, 0);
+    assert(attacks == 1);
 
     doom_reset(&player, 1);
     player.kills = 4;

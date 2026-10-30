@@ -135,6 +135,19 @@ void doom_select_slot(DoomPlayer *p, int slot)
         selected = DOOM_SUPER_SHOTGUN;
     doom_select_weapon(p, selected);
 }
+void doom_cancel_attack(DoomPlayer *p)
+{
+    if (!p) return;
+    p->cooldown = 0;
+    p->fire_delay = 0;
+    p->shot_fired = 0;
+    p->plasma_recovery = 0;
+    p->attack_down = 0;
+    p->refire = 0;
+    p->flash_tics = 0;
+    p->face_attack_tics = 0;
+    p->weapon_frame = p->weapon == DOOM_CHAINSAW ? 2 : 0;
+}
 static void fire_weapon(DoomPlayer *p, DoomEventFn emit, void *ctx)
 {
     int w, a, pellets = 1, damage = 0, spread = 0;
@@ -491,6 +504,37 @@ int doom_damage(DoomPlayer *p, int damage)
 {
     return doom_damage_from(p, damage, 0);
 }
+static const char cheat_god[] = "IDDQD";
+static const char cheat_ammo[] = "IDFA";
+static const char cheat_ammo_keys[] = "IDKFA";
+static const char cheat_choppers[] = "IDCHOPPERS";
+static const char cheat_noclip[] = "IDCLIP";
+static const char cheat_music[] = "IDMUS";
+
+int doom_cheat_is_prefix(const char *candidate, unsigned length)
+{
+    static const char *const sequences[] = {
+        cheat_god, cheat_ammo, cheat_ammo_keys, cheat_choppers, cheat_noclip
+    };
+    unsigned i, j;
+    if (!candidate || !length || length > sizeof(cheat_choppers) - 1u)
+        return 0;
+    for (i = 0; i < sizeof(sequences) / sizeof(sequences[0]); ++i)
+    {
+        size_t n = strlen(sequences[i]);
+        if (length > n) continue;
+        for (j = 0; j < length; ++j)
+            if (toupper((unsigned char)candidate[j]) != sequences[i][j]) break;
+        if (j == length) return 1;
+    }
+    if (length > 7u) return 0;
+    for (j = 0; j < length && j < 5u; ++j)
+        if (toupper((unsigned char)candidate[j]) != cheat_music[j]) return 0;
+    for (; j < length; ++j)
+        if (candidate[j] < '0' || candidate[j] > '9') return 0;
+    return 1;
+}
+
 static int ends(const DoomPlayer *p, const char *s)
 {
     size_t n = strlen(s);
@@ -500,10 +544,10 @@ int doom_cheat_wants_music_digit(const DoomPlayer *p)
 {
     if (!p || p->cheat_len >= sizeof(p->cheat))
         return 0;
-    if (ends(p, "IDMUS"))
+    if (ends(p, cheat_music))
         return 1;
     return p->cheat_len >= 6 &&
-           !memcmp(p->cheat + p->cheat_len - 6, "IDMUS", 5) &&
+           !memcmp(p->cheat + p->cheat_len - 6, cheat_music, 5) &&
            isdigit((unsigned char)p->cheat[p->cheat_len - 1]);
 }
 void doom_cheat_char(DoomPlayer *p, char ch, DoomEventFn emit, void *ctx)
@@ -514,23 +558,23 @@ void doom_cheat_char(DoomPlayer *p, char ch, DoomEventFn emit, void *ctx)
     if (!p || !isalnum((unsigned char)ch))
         return;
     ch = (char)toupper((unsigned char)ch);
-    music_digit_pending = doom_cheat_wants_music_digit(p) && !ends(p, "IDMUS");
+    music_digit_pending = doom_cheat_wants_music_digit(p) && !ends(p, cheat_music);
     if (p->cheat_len == sizeof(p->cheat) - 1)
     {
         memmove(p->cheat, p->cheat + 1, --p->cheat_len);
     }
     p->cheat[p->cheat_len++] = ch;
     p->cheat[p->cheat_len] = 0;
-    if (ends(p, "IDDQD"))
+    if (ends(p, cheat_god))
     {
         p->god = !p->god;
         if (p->god)
             p->health = 100;
         code = DOOM_CHEAT_GOD;
     }
-    else if (ends(p, "IDFA") || ends(p, "IDKFA"))
+    else if (ends(p, cheat_ammo) || ends(p, cheat_ammo_keys))
     {
-        if (ends(p, "IDKFA"))
+        if (ends(p, cheat_ammo_keys))
             p->keys = 1;
         p->armor = 200;
         p->armor_type = 2;
@@ -541,13 +585,18 @@ void doom_cheat_char(DoomPlayer *p, char ch, DoomEventFn emit, void *ctx)
         p->owned_mask = (1u << DOOM_WEAPON_COUNT) - 1;
         if (!p->doom2)
             p->owned_mask &= ~(1u << DOOM_SUPER_SHOTGUN);
-        code = ends(p, "IDKFA") ? DOOM_CHEAT_AMMO_KEYS : DOOM_CHEAT_AMMO;
+        code = ends(p, cheat_ammo_keys) ? DOOM_CHEAT_AMMO_KEYS : DOOM_CHEAT_AMMO;
     }
-    else if (ends(p, "IDCHOPPERS"))
+    else if (ends(p, cheat_choppers))
     {
         p->owned_mask |= 1u << DOOM_CHAINSAW;
         p->invulnerability_tics = 1;
         code = DOOM_CHEAT_CHOPPERS;
+    }
+    else if (ends(p, cheat_noclip))
+    {
+        /* Native collision state owns the actual toggle and confirmation. */
+        code = DOOM_CHEAT_NOCLIP;
     }
     else if (music_digit_pending && isdigit((unsigned char)ch))
     {

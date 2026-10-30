@@ -9,6 +9,8 @@
 #include "doom_combat.h"
 #include "doom_deaths.h"
 #include "doom_interaction_presentation.h"
+#include "doom_interaction_state.h"
+#include "doom_noclip.h"
 #include "doom_world_renderer.h"
 #include "doom_death_presentation.h"
 #include <windows.h>
@@ -125,6 +127,9 @@ struct DoomEngine {
     int selected = -1;
     int selected_slot = -1;
     std::array<char,16> cheats{}; unsigned cheat_count = 0;
+    std::array<char,16> cheat_capture{};
+    unsigned cheat_capture_length = 0;
+    ULONGLONG cheat_capture_at = 0;
     DoomPlayer *player = nullptr; DoomEventFn emit = nullptr; void *context = nullptr;
     double damage_carry = 0.0;
     void *level = nullptr;
@@ -138,6 +143,9 @@ struct DoomEngine {
     bool fpp_body_started = false;
     DoomDamageDirection *damage_direction = nullptr;
     DoomPlayerVoice *player_voice = nullptr;
+    DoomNativePickup *native_pickup = nullptr;
+    bool noclip_started = false, noclip_pending = false;
+    bool noclip_return_pending = false;
     DoomNoise *noise = nullptr;
     DoomMovementSampler *movement_sampler = nullptr;
     bool voice_installed = false, voice_replacement = false;
@@ -152,6 +160,7 @@ struct DoomEngine {
     bool stock_profile = false, cheats_enabled = true;
     void *ledge_actor = nullptr;
     bool ledge_hold = false;
+    ULONGLONG ledge_grounded_at = 0;
     bool interaction_static_ready = false;
     bool player_static_ready = false;
     int classic = 0, bilinear_filtering = 0, dynamic_lights = 1; float incoming = 1, outgoing = 1;
@@ -290,7 +299,9 @@ char __fastcall keyboard_hook(void *input, int key, unsigned char pressed, unsig
     DoomEngine *e = current.load(std::memory_order_acquire);
     if (!e || key < 0 || key > 255) return stock_keyboard(input,key,pressed,converter);
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
-    const bool eligible = e->active && e->gameplay();
+    const bool combatEligible = e->active && e->gameplay();
+    const bool eligible = combatEligible || (e->active && doom_noclip_input_ready());
+    const bool fresh=pressed && !e->swallowed[static_cast<size_t>(key)] && !e->forwarded[static_cast<size_t>(key)];
     const int space_scan=static_cast<int>(MapVirtualKeyW(VK_SPACE, MAPVK_VK_TO_VSC_EX) & 0xffU);
     const bool space_key=space_scan && key==space_scan;
     if (space_key) {
@@ -306,11 +317,30 @@ char __fastcall keyboard_hook(void *input, int key, unsigned char pressed, unsig
     }
     UINT mapped=MapVirtualKeyW(static_cast<UINT>(e->fire_key),MAPVK_VK_TO_VSC_EX);
     int fire_scan=static_cast<int>((mapped & 0xffu) | ((mapped & 0xff00u) ? 0x80u : 0u));
-    const bool fire_capture=eligible && mapped && key==fire_scan;
+    const bool fire_capture=combatEligible && mapped && key==fire_scan;
     bool developer_shortcut = false;
 #if defined(DOOM_MODE_LAB)
-    developer_shortcut = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    developer_shortcut = key>=2 && key<=10 && (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 #endif
+    bool prefix_capture=false;
+    const UINT vk=MapVirtualKeyW(static_cast<UINT>(key),MAPVK_VSC_TO_VK);
+    const bool letter_or_digit=(vk>='A' && vk<='Z') || (vk>='0' && vk<='9');
+    if (!eligible || !e->cheats_enabled) e->cheat_capture_length=0;
+    if (eligible && e->cheats_enabled && fresh && !developer_shortcut && letter_or_digit) {
+        const ULONGLONG stamp=GetTickCount64();
+        if (stamp-e->cheat_capture_at>2000 || e->cheat_capture_length>=e->cheat_capture.size()-1)
+            e->cheat_capture_length=0;
+        e->cheat_capture[e->cheat_capture_length]=static_cast<char>(vk);
+        if (!doom_cheat_is_prefix(e->cheat_capture.data(),e->cheat_capture_length+1)) {
+            e->cheat_capture_length=0;
+            e->cheat_capture[0]=static_cast<char>(vk);
+        }
+        if (doom_cheat_is_prefix(e->cheat_capture.data(),e->cheat_capture_length+1)) {
+            ++e->cheat_capture_length;
+            e->cheat_capture_at=stamp;
+            prefix_capture=true;
+        }
+    }
     bool music_digit=false;
     if (eligible && e->cheats_enabled && !e->death_wait && !developer_shortcut &&
         e->player && key>=2 && key<=11) {
@@ -319,16 +349,15 @@ char __fastcall keyboard_hook(void *input, int key, unsigned char pressed, unsig
             doom_cheat_char(&pending,e->cheats[i],nullptr,nullptr);
         music_digit=doom_cheat_wants_music_digit(&pending)!=0;
     }
-    const bool slot_capture=eligible && !e->death_wait && !fire_capture && !developer_shortcut &&
+    const bool slot_capture=combatEligible && !e->death_wait && !fire_capture && !developer_shortcut &&
         !music_digit && key >= 2 && key <= 10;
-    const bool captured=fire_capture || slot_capture || music_digit || (e->death_wait && eligible && space_key);
+    const bool captured=prefix_capture || fire_capture || slot_capture || music_digit || (e->death_wait && eligible && space_key);
     if (!eligible) { e->keyboard_fire=false; e->fire=false; }
     if (fire_capture) e->keyboard_fire=!music_digit && !e->death_wait && !e->death_committed && pressed != 0;
     if (slot_capture && pressed && key <= 8 && !e->swallowed[static_cast<size_t>(key)])
         e->selected_slot = key - 1;
-    if (eligible && e->cheats_enabled && pressed && e->cheat_count < e->cheats.size()) {
-        UINT vk = MapVirtualKeyW(static_cast<UINT>(key), MAPVK_VSC_TO_VK);
-        if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9'))
+    if (eligible && e->cheats_enabled && fresh && !developer_shortcut && e->cheat_count < e->cheats.size()) {
+        if (letter_or_digit)
             e->cheats[e->cheat_count++] = static_cast<char>(vk);
     }
     bool swallow = captured || e->swallowed[static_cast<size_t>(key)];
@@ -368,6 +397,7 @@ extern "C" void doom_engine_destroy(DoomEngine *engine) {
     doom_engine_deactivate(engine);
     doom_player_voice_destroy(engine->player_voice);
     engine->player_voice=nullptr;
+    doom_native_pickup_destroy(engine->native_pickup); engine->native_pickup=nullptr;
     doom_noise_destroy(engine->noise); engine->noise=nullptr;
     doom_movement_sampler_destroy(engine->movement_sampler); engine->movement_sampler=nullptr;
     doom_deaths_destroy(engine->deaths);
@@ -429,7 +459,9 @@ static int current_parkour(DoomEngine *e, void *actor,DoomEngineFrame *frame) {
     if (!e->parkour_static_ready || !actor || !e->in_update_scope()) return 0;
     __try {
         if (actor!=e->local_player() || current_player_level(e)!=e->level) return 0;
-        if (e->ledge_actor!=actor) { e->ledge_actor=actor; e->ledge_hold=false; }
+        if (e->ledge_actor!=actor) {
+            e->ledge_actor=actor; e->ledge_hold=false; e->ledge_grounded_at=0;
+        }
         void *move=owned_controller(e,actor,0xbc0,0x180b368);
         void *edge=owned_controller(e,actor,0xc80,0x1808d88);
         void *ladder=owned_controller(e,actor,0xbf8,0x180a4c8);
@@ -439,12 +471,20 @@ static int current_parkour(DoomEngine *e, void *actor,DoomEngineFrame *frame) {
         frame->ladder_active=ladder && field<unsigned char>(ladder,0x10)!=0;
         if (actor!=e->local_player() || current_player_level(e)!=e->level) return 0;
         if (frame->edge_active) {
+            e->ledge_grounded_at=0;
             const unsigned state=frame->edge_state;
             if (state==1 || state==2 || state==3 || state==11 || state==12 || state==14 || state==15)
                 e->ledge_hold=true;
             return e->ledge_hold ? 2 : 1;
         }
-        e->ledge_hold=false;
+        /* Keep the weapon down during the jump or climb away from a ledge.
+         * Controller changes can briefly report the ordinary move state. */
+        if (e->ledge_hold) {
+            if (frame->move_state || frame->ladder_active) e->ledge_grounded_at=0;
+            else if (!e->ledge_grounded_at) e->ledge_grounded_at=GetTickCount64();
+            if (!e->ledge_grounded_at || GetTickCount64()-e->ledge_grounded_at<120) return 2;
+            e->ledge_hold=false; e->ledge_grounded_at=0;
+        }
         if (frame->ladder_active) return 1;
         return frame->move_state>=1 && frame->move_state<=23 ? 1 : 0;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
@@ -643,14 +683,35 @@ extern "C" void doom_engine_set_cheats_enabled(DoomEngine *e, int enabled) {
     if (!e) return;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     const bool value=enabled!=0;
-    if (value!=e->cheats_enabled) { e->cheat_count=0; e->cheats.fill(0); }
+    if (value!=e->cheats_enabled) {
+        e->cheat_count=0; e->cheats.fill(0); e->cheat_capture_length=0;
+    }
     e->cheats_enabled=value;
+    doom_noclip_set_cheats_enabled(value);
 }
 extern "C" void doom_engine_set_voice_replacement(DoomEngine *e, int ready) {
     if (!e) return;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     e->voice_replacement=ready!=0;
     if (e->voice_installed) doom_player_voice_set_active(e->player_voice,e->active && e->voice_replacement);
+}
+extern "C" int doom_engine_request_noclip(DoomEngine *e) {
+    if (!e) return 0;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    if (!e->active || !e->noclip_started || !e->in_update_scope() ||
+        e->death_wait || e->death_committed || !e->cheats_enabled) return 0;
+    e->noclip_pending=true;
+    return 1;
+}
+extern "C" void doom_engine_allow_native_pickups(DoomEngine *e, int accepting) {
+    if (!e) return;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    if (e->in_update_scope()) doom_native_pickup_accept(e->native_pickup,e->active && accepting);
+}
+extern "C" unsigned doom_engine_native_pickups(DoomEngine *e, DoomNativePickupRecord *out, unsigned capacity) {
+    if (!e) return 0;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    return e->active && e->in_update_scope() ? doom_native_pickup_drain(e->native_pickup,out,capacity) : 0;
 }
 extern "C" int doom_engine_initialize(DoomEngine *e) {
     if (!e) return 0;
@@ -665,6 +726,7 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
     e->engine_module = engine;
 #if defined(DOOM_MODE_LAB)
     if (stock && !e->player_voice) e->player_voice=doom_player_voice_create(game);
+    if (stock && !e->native_pickup) e->native_pickup=doom_native_pickup_create(game);
     if (!e->noise) e->noise=doom_noise_create(game,engine);
     wchar_t movementSamples[8]{};
     if (stock && !e->movement_sampler && GetEnvironmentVariableW(L"DOOMING_LIGHT_MOVEMENT_SAMPLES",movementSamples,8)==1 && movementSamples[0]==L'1')
@@ -816,6 +878,8 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
 #if defined(DOOM_MODE_LAB)
     if (!doom_menu_guard_start(e->game,e->stock_profile ? 1 : 0))
         OutputDebugStringA("Doom Mode Lab: player menu control unavailable\n");
+    e->noclip_started=doom_noclip_start(e->game,e->engine_module,e->level,e->generation,e->stock_profile)!=0;
+    if (e->native_pickup) (void)doom_native_pickup_start(e->native_pickup);
     e->death_presentation_started=doom_death_presentation_start(e->game,e->engine_module)!=0;
     if (!e->death_presentation_started)
         OutputDebugStringA("Doom Mode Lab: death camera unavailable\n");
@@ -843,7 +907,15 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
 extern "C" void doom_engine_deactivate(DoomEngine *e) {
     if (!e) return;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    void *cleanupLevel=nullptr;
+    if (e->in_update_scope()) {
+        cleanupLevel=current_player_level(e);
+        if (!cleanupLevel && doom_noclip_active()) cleanupLevel=e->level;
+    }
     (void)doom_menu_guard_stop();
+    (void)doom_noclip_stop();
+    e->noclip_started=false; e->noclip_pending=false; e->noclip_return_pending=false;
+    (void)doom_native_pickup_stop(e->native_pickup);
     e->ledge_actor=nullptr; e->ledge_hold=false;
     if (e->voice_installed) {
         doom_player_voice_set_active(e->player_voice,0);
@@ -858,7 +930,7 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
         doom_death_presentation_stop()) e->death_presentation_started=false;
     if (e->world_renderer && e->in_update_scope() && e->level &&
         e->level == e->world_renderer_level &&
-        current_player_level(e) == e->world_renderer_level &&
+        cleanupLevel == e->world_renderer_level &&
         doom_world_renderer_destroy(e->world_renderer, e->level, e->world_renderer_generation)) {
         e->world_renderer = nullptr;
         e->world_renderer_level = nullptr;
@@ -876,7 +948,7 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
     }
 #endif
     if (e->hud && e->in_update_scope()) {
-        void *level = current_player_level(e);
+        void *level = cleanupLevel;
 #if defined(DOOM_MODE_LAB)
         doom_hud_host_death_screen(e->hud, level, e->generation, 0);
 #endif
@@ -894,8 +966,10 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
     e->swallowed.fill(false); e->forwarded.fill(false);
     e->mouse_swallowed=false; e->mouse_forwarded=false;
     e->interaction_down=false; e->interaction_failed=false;
+    e->ledge_actor=nullptr; e->ledge_hold=false; e->ledge_grounded_at=0;
     e->next_hud_attempt=0;
     e->selected=-1; e->selected_slot=-1; e->cheat_count=0; e->cheats.fill(0);
+    e->cheat_capture_length=0; e->cheat_capture_at=0;
     bool ok=e->mouse.restore(); ok=e->keyboard.restore() && ok;
     ok=e->interaction.restore() && ok; ok=e->jump.restore() && ok;
     ok=e->health.restore() && ok;
@@ -911,6 +985,16 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
         e->damage_carry=0.0;
     if (!e->in_update_scope() || !e->level) return 0;
     frame->map_generation=e->generation;
+    if (e->noclip_pending) {
+        e->noclip_pending=false;
+        const bool changed=doom_noclip_toggle()!=0;
+        frame->noclip_notice=changed ? (doom_noclip_active() ? 1 : 2) : 3;
+    }
+    frame->noclip=doom_noclip_active();
+    frame->noclip_input=doom_noclip_input_ready();
+    doom_noclip_diagnostic(&frame->noclip_diagnostic);
+    if (doom_noclip_take_returned()) e->noclip_return_pending=true;
+    const bool fromNoclip=e->noclip_return_pending;
     void *actor=nullptr; float native_health=0.0f; bool native_alive=false;
     const bool has_vitals=current_player_vitals(e,&actor,&native_health,&native_alive)!=0;
 #if defined(DOOM_MODE_LAB)
@@ -923,21 +1007,26 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
             e->death_actor=nullptr; e->death_wait=false; e->death_committed=false;
             e->death_space_armed=false; e->death_space_request=false;
         }
-        if (e->native_alive_known && native_alive &&
+        if (!fromNoclip && e->native_alive_known && native_alive &&
             (!e->native_alive || (e->last_actor && actor!=e->last_actor))) {
             e->respawn_pending=true;
             e->damage_carry=0.0;
             e->damage_sequence=0; e->damage_side=0; e->damage_amount=0;
         }
         e->last_actor=actor; e->native_alive=native_alive; e->native_alive_known=true;
+        e->noclip_return_pending=false;
     }
     frame->paused=!has_vitals || !e->gameplay();
+    if (frame->paused) doom_native_pickup_accept(e->native_pickup,0);
     const bool gameplayView=has_vitals && e->gameplay_view();
 #if defined(DOOM_MODE_LAB)
     const int suppressBody=gameplayView && native_alive;
     frame->body_suppression=e->fpp_body_started && doom_fpp_body_update(suppressBody) ? suppressBody : -1;
     if (e->voice_installed)
-        doom_player_voice_set_active(e->player_voice,!frame->paused && native_alive && e->voice_replacement);
+        doom_player_voice_set_active(e->player_voice,
+            ((!frame->paused && native_alive) || e->death_wait || e->death_committed) && e->voice_replacement);
+    frame->jump_sounds=doom_player_voice_drain_jumps(e->player_voice);
+    frame->voice_observation_count=doom_player_voice_drain_observations(e->player_voice,frame->voice_observations,64);
 #endif
     frame->damage_sequence=e->damage_sequence;
     frame->damage_side=e->damage_side;
@@ -945,11 +1034,15 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     frame->damage_thread=e->damage_thread; frame->update_thread=e->game_thread;
     frame->direction=e->direction_snapshot;
     frame->parkour=!frame->paused && native_alive ? current_parkour(e,actor,frame) : 0;
+#if defined(DOOM_MODE_LAB)
+    if (e->stock_profile && !frame->paused && native_alive)
+        frame->interaction_active=doom_interaction_state(e->game,actor)>0;
+#endif
     if (frame->paused) {
         e->fire=false; e->keyboard_fire=false;
         e->death_space_request=false;
     }
-    if (frame->paused && has_vitals && e->hud && !gameplayView)
+    if (frame->paused && (has_vitals || frame->noclip) && e->hud && !gameplayView && !frame->noclip_input)
         doom_hud_host_hide(e->hud, e->level, e->generation);
 #if defined(DOOM_MODE_LAB)
     if (e->death_committed && e->hud)
@@ -1230,8 +1323,9 @@ extern "C" int doom_engine_present_layers(DoomEngine *e, const uint8_t *weapon,
                                            float hud_scale, float weapon_scale, float weapon_x, float weapon_y) {
     if (!e || !weapon || !status || !message) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
-    if (!e->active || !e->in_update_scope() || !e->level ||
-        current_player_level(e) != e->level || !e->gameplay()) return 0;
+    if (!e->active || !e->in_update_scope() || !e->level) return 0;
+    const bool flying=doom_noclip_input_ready()!=0;
+    if (!flying && (current_player_level(e) != e->level || !e->gameplay())) return 0;
     if (!e->hud) {
         const ULONGLONG now = GetTickCount64();
         if (now < e->next_hud_attempt) return 0;

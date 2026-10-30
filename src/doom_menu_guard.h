@@ -20,6 +20,7 @@ static inline int doom_menu_guard_blocks_action(unsigned int id)
     case 161: /* Fire weapon */
     case 167: /* Kick */
     case 170: /* Melee attack */
+    case 218: /* Use equipped secondary */
     case 227: /* Charge attack left */
     case 276: /* Weapon aim toggle */
     case 284: /* Tackle */

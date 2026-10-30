@@ -32,14 +32,18 @@ In Mods, select **SoundFont (SF2)** as the music synthesizer and set
 the current track before switching playback. If the font cannot be loaded,
 the track uses Classic OPL. No SoundFont is bundled.
 
-The player simulation recognizes `IDDQD`, `IDFA`, `IDKFA`, `IDCHOPPERS` and `IDMUSnn`.
+The player simulation recognizes `IDDQD`, `IDFA`, `IDKFA`, `IDCHOPPERS`, `IDCLIP` and `IDMUSnn`.
 Doom keycards do not unlock Dying Light quest doors.
+The lab integration maps `IDCLIP` to Player's developer fly mode.
+Weapons are hidden while flying. Fly-mode HUD and music transitions are still
+being refined.
 
 Left mouse and the configurable extra fire key (Left Ctrl by default) fire.
 Weapon keys 1–7 select the classic slots; 1 cycles melee weapons and 3 cycles
 the shotgun and super shotgun when available.
 Inventory, map, quest and skill-menu hotkeys are disabled during Doom gameplay.
 Escape still opens the pause menu and Mods settings.
+Native attacks and equipped throwables are also disabled.
 
 The status bar fits the screen width by default. Its scale and weapon sprite
 scale are separate. Doom graphics use point filtering; enable **Bilinear Doom
@@ -49,6 +53,16 @@ settings apply immediately.
 Weapon sprites bob with movement. **Projectile lights** lets plasma and BFG
 shots illuminate nearby surfaces. BFG spray hits show Doom's target-impact
 animation.
+
+Reach and pickup hands rise from below the screen and lower before the weapon
+returns. Object interactions lower the weapon. Driving the buggy blocks weapon
+selection and firing until the weapon is raised again after exiting; Doomguy
+uses the sustained-fire face above 60 km/h.
+
+Native item and cash notices use the top-left Doom message area and pickup sound.
+Names that cannot fit or use characters outside Doom's font retain the game's
+normal notification. The verified local jump, damage and death voice calls use
+Doom sounds; additional climbing voice paths are still being integrated.
 
 ## Build
 

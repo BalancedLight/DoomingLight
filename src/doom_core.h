@@ -43,7 +43,8 @@ extern "C"
         DOOM_CHEAT_GOD = 1,
         DOOM_CHEAT_AMMO = 2,
         DOOM_CHEAT_CHOPPERS = 3,
-        DOOM_CHEAT_AMMO_KEYS = 4
+        DOOM_CHEAT_AMMO_KEYS = 4,
+        DOOM_CHEAT_NOCLIP = 5
     } DoomCheatId;
     typedef enum DoomSoundId
     {
@@ -100,12 +101,18 @@ extern "C"
     unsigned doom_random(DoomPlayer *player);
     void doom_select_weapon(DoomPlayer *player, DoomWeapon weapon);
     void doom_select_slot(DoomPlayer *player, int slot);
+    /* Cancel attack actions without changing ammo, inventory, weapon switch,
+     * death, or face state. Continue passing fire=0 while attacks are blocked. */
+    void doom_cancel_attack(DoomPlayer *player);
     /* Advance exactly one 35 Hz tic, for hosts synchronizing world effects. */
     void doom_tick(DoomPlayer *player, int fire, DoomEventFn emit, void *context);
     void doom_advance(DoomPlayer *player, unsigned elapsed_ms, int fire, DoomEventFn emit,
                       void *context);
     int doom_damage(DoomPlayer *player, int damage);
     int doom_damage_from(DoomPlayer *player, int damage, int attacker_side);
+    /* True if candidate is a case-insensitive prefix of a supported cheat,
+     * including up to two IDMUS digits. Caller owns timeout and buffering. */
+    int doom_cheat_is_prefix(const char *candidate, unsigned length);
     /* True while IDMUS is waiting for either track-number digit. */
     int doom_cheat_wants_music_digit(const DoomPlayer *player);
     void doom_cheat_char(DoomPlayer *player, char ch, DoomEventFn emit, void *context);

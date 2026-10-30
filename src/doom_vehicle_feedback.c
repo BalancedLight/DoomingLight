@@ -5,7 +5,7 @@
 
 #define WEAPON_LOWER_MS 350.0f
 #define WEAPON_LOWER_PIXELS 200.0f
-#define FAST_BUGGY_MPS (40.0 / 3.6)
+#define FAST_BUGGY_MPS (60.0 / 3.6)
 
 static int is_buggy(const char *type)
 {
@@ -32,8 +32,16 @@ void doom_vehicle_feedback_advance(DoomVehicleFeedback *feedback, unsigned elaps
     int in_buggy;
     float step;
     if (!feedback) return;
-    in_buggy = valid && player_present && vehicle_present && is_buggy(vehicle_type);
-    feedback->fast_buggy = in_buggy && isfinite(speed_mps) && speed_mps > FAST_BUGGY_MPS;
+    if (valid)
+    {
+        feedback->in_buggy = player_present && vehicle_present && is_buggy(vehicle_type);
+        feedback->fast_buggy = feedback->in_buggy && isfinite(speed_mps) && speed_mps > FAST_BUGGY_MPS;
+    }
+    else
+    {
+        feedback->fast_buggy = 0;
+    }
+    in_buggy = feedback->in_buggy;
     step = (float)elapsed_ms / WEAPON_LOWER_MS;
     if (step > 1.0f) step = 1.0f;
     if (in_buggy)
@@ -46,6 +54,10 @@ void doom_vehicle_feedback_advance(DoomVehicleFeedback *feedback, unsigned elaps
         feedback->weapon_lowering -= step;
         if (feedback->weapon_lowering < 0.0f) feedback->weapon_lowering = 0.0f;
     }
+}
+int doom_vehicle_feedback_blocks_weapons(const DoomVehicleFeedback *feedback)
+{
+    return feedback && (feedback->in_buggy || feedback->weapon_lowering > 0.0f);
 }
 void doom_vehicle_feedback_present(const DoomVehicleFeedback *feedback,
                                    const DoomPlayer *player, DoomPlayer *render_player)

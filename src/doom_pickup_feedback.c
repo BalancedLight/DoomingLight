@@ -30,7 +30,7 @@ void doom_pickup_feedback_record(DoomPickupFeedback *feedback, DoomDrop kind, in
         feedback->amount = amount;
     feedback->kind = kind;
     feedback->recorded_this_frame = 1;
-    snprintf(text, sizeof(text), "Picked up %s +%d", names[(int)kind], feedback->amount);
+    snprintf(text, sizeof(text), "You picked up %s +%d", names[(int)kind], feedback->amount);
     (void)doom_messages_post(&feedback->messages, text, DOOM_MESSAGE_NORMAL, PICKUP_MESSAGE_MS);
 }
 const char *doom_pickup_feedback_text(const DoomPickupFeedback *feedback)

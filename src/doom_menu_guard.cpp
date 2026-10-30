@@ -1,4 +1,5 @@
 #include "doom_menu_guard.h"
+#include "doom_noclip.h"
 
 #if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -37,9 +38,11 @@ bool suppress(void *action, float *neutral) {
         void *camera_manager=session ? field<void *>(session,192) : nullptr;
         DWORD pid=0;
         GetWindowThreadProcessId(GetForegroundWindow(),&pid);
-        if (pid!=GetCurrentProcessId() || !camera_manager || !field<void *>(camera_manager,64) ||
-            (field<int>(camera_manager,88)!=1 && field<int>(camera_manager,88)!=2) ||
-            !reinterpret_cast<GetPlayer>(game+0x3c2d90)(singleton)) return false;
+        if (pid!=GetCurrentProcessId()) return false;
+        const bool ordinary=camera_manager && field<void *>(camera_manager,64) &&
+            (field<int>(camera_manager,88)==1 || field<int>(camera_manager,88)==2) &&
+            reinterpret_cast<GetPlayer>(game+0x3c2d90)(singleton);
+        if (!ordinary && !doom_noclip_input_ready()) return false;
         // InputAction applies this inversion before dispatching its listeners.
         *neutral=(field<unsigned char>(action,16)&0x10u) ? 1.0f : 0.0f;
         return true;

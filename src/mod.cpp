@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -113,6 +114,11 @@ struct Runtime {
     DoomPickupFeedback pickupFeedback{};
     DoomVehicleFeedback vehicleFeedback{};
     bool pickupSoundQueued = false;
+    bool combatSuspended = false, handBusy = false, weaponReturning = false;
+    bool deathSoundPlayed = false;
+    std::deque<std::string> nativePickupMessages;
+    uint64_t nextNativePickupMessage = 0;
+    uint64_t flyHudTick = 0;
     uint64_t sawStartupUntil = 0;
     uint64_t updateToken = 0, configToken = 0, musicToken = 0;
     uint64_t lastTick = 0, retryMusicAt = 0;
@@ -143,6 +149,8 @@ struct Runtime {
     uint64_t nextMovementSample = 0;
     unsigned movementSampleCount = 0;
     int lastMovementError = 0;
+    DoomNoclipDiagnostic lastNoclipDiagnostic{};
+    unsigned noclipDiagnosticLogs = 0;
     std::array<unsigned, DOOM_WORLD_MAX_PROJECTILES> tracedAge{};
     std::array<int, DOOM_WORLD_MAX_PROJECTILES> tracedState{};
 #endif
@@ -434,8 +442,12 @@ struct Runtime {
     }
     float movementSpeed(uint64_t timestamp, bool movingAllowed) {
         float x=0, y=0, z=0, speed=0;
-        if (!movingAllowed || !doom_engine_position(engine,&x,&y,&z)) {
+        if (!movingAllowed) {
             resetMotion(); return 0;
+        }
+        if (!doom_engine_position(engine,&x,&y,&z)) {
+            motionSampleAt=0; lastMotionSpeed=0;
+            doom_hud_bob_reset(assets.hud.get()); return 0;
         }
         if (motionSampleAt && timestamp==motionSampleAt) return lastMotionSpeed;
         if (motionSampleAt && timestamp>motionSampleAt && timestamp-motionSampleAt<=250) {
@@ -443,7 +455,7 @@ struct Runtime {
             const float dx=x-motionX, dz=z-motionZ;
             speed=std::sqrt(dx*dx+dz*dz)/seconds;
             if (!std::isfinite(speed) || speed>24.0f) {
-                doom_hud_motion_reset(assets.hud.get()); speed=0;
+                doom_hud_bob_reset(assets.hud.get()); speed=0;
             }
         }
         motionX=x; motionZ=z; motionSampleAt=timestamp; lastMotionSpeed=speed;
@@ -542,6 +554,8 @@ struct Runtime {
     static void onDoomEvent(void* context, const DoomEvent* event) {
         Runtime& self = *static_cast<Runtime*>(context);
         if (!event) return;
+        if (self.combatSuspended && (event->type==DOOM_EVENT_ATTACK ||
+                event->type==DOOM_EVENT_WEAPON_FIRED || event->type==DOOM_EVENT_SOUND)) return;
         if (event->type == DOOM_EVENT_ATTACK) {
             const int result = doom_engine_attack(self.engine, event);
 #if defined(DOOM_MODE_LAB)
@@ -587,9 +601,15 @@ struct Runtime {
             case DOOM_CHEAT_AMMO: message="Ammo (no keys) Added"; break;
             case DOOM_CHEAT_AMMO_KEYS: message="Very Happy Ammo Added"; break;
             case DOOM_CHEAT_CHOPPERS: message="... doesn't suck - GM"; break;
+            case DOOM_CHEAT_NOCLIP:
+                if (!doom_engine_request_noclip(self.engine)) message="Noclip Unavailable";
+                break;
             default: break;
             }
-            if (message) (void)doom_messages_post(&self.pickupFeedback.messages,message,DOOM_MESSAGE_IMPORTANT,4000);
+            if (message) {
+                doom_engine_allow_native_pickups(self.engine,0);
+                (void)doom_messages_post(&self.pickupFeedback.messages,message,DOOM_MESSAGE_IMPORTANT,4000);
+            }
         }
         else if (event->type == DOOM_EVENT_SOUND) {
             static const char* const names[] = {"DSPISTOL", "DSSHOTGN", "DSSGCOCK", "DSDSHTGN",
@@ -638,6 +658,10 @@ struct Runtime {
     }
     void deactivate() {
         active = false;
+        combatSuspended=false; handBusy=false; weaponReturning=false;
+        deathSoundPlayed=false;
+        nativePickupMessages.clear(); nextNativePickupMessage=0;
+        flyHudTick=0;
         lastDamageSequence=0;
         resetMotion();
         doom_pickup_feedback_reset(&pickupFeedback);
@@ -680,9 +704,11 @@ struct Runtime {
             doom_world_runtime_reset(&world, generation);
 #endif
             doom_engine_reset_damage(engine);
-            DoomSound pain{};
-            const bool painReady=audio && doom_wad_sound(assets.wad.get(),"DSPLPAIN",&pain);
-            doom_sound_free(&pain);
+            DoomSound pain{},jump{},death{};
+            const bool painReady=audio && doom_wad_sound(assets.wad.get(),"DSPLPAIN",&pain) &&
+                doom_wad_sound(assets.wad.get(),"DSOOF",&jump) &&
+                doom_wad_sound(assets.wad.get(),"DSPLDETH",&death);
+            doom_sound_free(&pain); doom_sound_free(&jump); doom_sound_free(&death);
             doom_engine_set_voice_replacement(engine,painReady);
             if (!doom_engine_activate(engine, generation)) {
                 if (!bindingWarning) {
@@ -697,8 +723,58 @@ struct Runtime {
         if (!active) { (void)releaseMusicLease(); return; }
         DoomEngineFrame frame{};
         if (!doom_engine_poll(engine, &frame) || !frame.ready) { deactivate(); return; }
+        doom_engine_allow_native_pickups(engine,0);
         doom_audio_poll(audio);
-        doom_audio_pause(audio, frame.paused);
+        doom_audio_pause(audio, frame.paused && !frame.noclip_input);
+#if defined(DOOM_MODE_LAB)
+        if (noclipDiagnosticLogs<64 && (!noclipDiagnosticLogs ||
+                std::memcmp(&lastNoclipDiagnostic,&frame.noclip_diagnostic,sizeof(lastNoclipDiagnostic)))) {
+            const auto &d=frame.noclip_diagnostic;
+            char message[256]{};
+            std::snprintf(message,sizeof(message),
+                "Doom lab noclip: enabled=%d tracked=%d validation=%d camera=%d saved=%d owner=%d actor=%d input=%d transition=%d",
+                d.enabled,d.tracked,d.validation,d.camera_mode,d.saved,d.owner,d.actor,d.input_mode,d.last_transition);
+            log("INFO",message); lastNoclipDiagnostic=d; ++noclipDiagnosticLogs;
+        }
+        for (unsigned i=0; i<frame.voice_observation_count && i<64; ++i) {
+            const auto &v=frame.voice_observations[i];
+            char message[128]{};
+            std::snprintf(message,sizeof(message),"Doom lab voice: kind=%u category=%u caller=%08X",v.kind,v.category,v.caller_rva);
+            log("INFO",message);
+        }
+#endif
+        if (frame.noclip_notice) {
+            const char *message=frame.noclip_notice==1 ? "No Clipping Mode ON" :
+                frame.noclip_notice==2 ? "No Clipping Mode OFF" : "Noclip Unavailable";
+            (void)doom_messages_post(&pickupFeedback.messages,message,DOOM_MESSAGE_IMPORTANT,4000);
+        }
+        if (frame.noclip) {
+            combatSuspended=true;
+            doom_cancel_attack(&player); stopWeaponSound(); resetMotion();
+            handBusy=false; weaponReturning=false;
+            if (resetCheatInput) { player.cheat_len=0; player.cheat[0]=0; resetCheatInput=false; }
+            if (frame.noclip_input) {
+                const uint64_t stamp=now();
+                const unsigned elapsed=flyHudTick && stamp>=flyHudTick
+                    ? static_cast<unsigned>(std::min<uint64_t>(stamp-flyHudTick,250)) : 0;
+                flyHudTick=stamp;
+                doom_pickup_feedback_begin_frame(&pickupFeedback,elapsed);
+                if (settings.cheats)
+                    for (unsigned i=0; i<std::min(frame.cheat_count,16u); ++i)
+                        doom_cheat_char(&player,frame.cheat_chars[i],onDoomEvent,this);
+                if (doom_hud_render_layers(assets.hud.get(),&player,
+                        weaponPixels.data(),weaponPixels.size(),statusPixels.data(),statusPixels.size(),
+                        messagePixels.data(),messagePixels.size(),doom_pickup_feedback_text(&pickupFeedback))) {
+                    weaponPixels.fill(0);
+                    (void)doom_engine_present_layers(engine,weaponPixels.data(),statusPixels.data(),messagePixels.data(),
+                        settings.hudFit ? 0.f : settings.hud/100.f,settings.weaponScale/100.f,0,0);
+                }
+            } else flyHudTick=0;
+            lastTick=0;
+            musicTick();
+            return;
+        }
+        flyHudTick=0;
 #if defined(DOOM_MODE_LAB)
         if ((frame.fire != previousFire || frame.paused != previousPaused) && inputLogCount++ < 32) {
             char message[192]{};
@@ -751,6 +827,8 @@ struct Runtime {
             if (!sound("DSPLPAIN")) doom_engine_set_voice_replacement(engine,0);
         }
         lastDamageSequence=frame.damage_sequence;
+        if (!frame.paused && frame.jump_sounds && player.health>0 && !sound("DSOOF"))
+            doom_engine_set_voice_replacement(engine,0);
         if (frame.paused) { stopWeaponSound(); resetMotion(); lastTick = 0; return; }
         if (frame.respawn) {
             stopWeaponSound();
@@ -758,6 +836,8 @@ struct Runtime {
             doom_pickup_feedback_reset(&pickupFeedback);
             doom_vehicle_feedback_reset(&vehicleFeedback);
             doom_reset(&player, player.doom2);
+            deathSoundPlayed=false;
+            nativePickupMessages.clear(); nextNativePickupMessage=0;
 #if defined(DOOM_MODE_LAB)
             doom_world_runtime_reset(&world, generation);
             worldWarnings = hostWarnings = 0;
@@ -768,19 +848,38 @@ struct Runtime {
             if (settings.music == "doom") requestMusic(defaultTrack());
         }
         if (!frame.alive) player.health = 0;
+        if (player.health>0) deathSoundPlayed=false;
+        else if (!deathSoundPlayed) {
+            deathSoundPlayed=true;
+            if (!sound("DSPLDETH")) doom_engine_set_voice_replacement(engine,0);
+        }
         if (resetCheatInput) { player.cheat_len=0; player.cheat[0]=0; resetCheatInput=false; }
+        const uint64_t timestamp = now();
+        const unsigned frameElapsed = lastTick && timestamp >= lastTick
+            ? static_cast<unsigned>(std::min<uint64_t>(timestamp - lastTick, 250)) : 0;
+        auto vehicleRequest=record<DlumaNoRequest>();
+        auto vehicle=resultRecord<DlumaVehicleStateResult>();
+        char vehicleType[64]{}, vehicleClass[128]{};
+        vehicle.vehicle_type.data=vehicleType; vehicle.vehicle_type.capacity=sizeof(vehicleType);
+        vehicle.class_name.data=vehicleClass; vehicle.class_name.capacity=sizeof(vehicleClass);
+        const DlumaStatus vehicleStatus=playerApi.vehicle_state
+            ? playerApi.vehicle_state(playerApi.context,&vehicleRequest,&vehicle) : DLUMA_STATUS_UNAVAILABLE;
+        doom_vehicle_feedback_advance(&vehicleFeedback,frameElapsed,vehicleStatus==DLUMA_STATUS_OK,
+            vehicle.player_present,vehicle.vehicle_present && vehicle.is_local_driver,vehicleType,vehicle.speed_mps);
+        combatSuspended=doom_vehicle_feedback_blocks_weapons(&vehicleFeedback) ||
+            frame.parkour==2 || frame.interaction_active || handBusy;
+        if (combatSuspended) { doom_cancel_attack(&player); stopWeaponSound(); }
         if (player.health > 0 && !frame.doom_dead) {
-            if (frame.weapon_select >= 0 && frame.weapon_select < DOOM_WEAPON_COUNT)
-                doom_select_weapon(&player, static_cast<DoomWeapon>(frame.weapon_select));
-            if (frame.weapon_slot >= 1 && frame.weapon_slot <= 7)
-                doom_select_slot(&player, frame.weapon_slot);
+            if (!combatSuspended) {
+                if (frame.weapon_select >= 0 && frame.weapon_select < DOOM_WEAPON_COUNT)
+                    doom_select_weapon(&player, static_cast<DoomWeapon>(frame.weapon_select));
+                if (frame.weapon_slot >= 1 && frame.weapon_slot <= 7)
+                    doom_select_slot(&player, frame.weapon_slot);
+            }
             if (settings.cheats) for (unsigned i = 0; i < std::min(frame.cheat_count, 16u); ++i)
                 doom_cheat_char(&player, frame.cheat_chars[i], onDoomEvent, this);
             if (frame.interact_failed) sound("DSNOWAY");
         }
-        const uint64_t timestamp = now();
-        const unsigned frameElapsed = lastTick && timestamp >= lastTick
-            ? static_cast<unsigned>(std::min<uint64_t>(timestamp - lastTick, 250)) : 0;
         const float speed=movementSpeed(timestamp,player.health>0 && !frame.doom_dead);
 #if defined(DOOM_MODE_LAB)
         if (timestamp>=nextMovementSample && movementSampleCount<1800) {
@@ -807,12 +906,23 @@ struct Runtime {
 #endif
         doom_pickup_feedback_begin_frame(&pickupFeedback, frameElapsed);
         pickupSoundQueued = false;
+        DoomNativePickupRecord nativePickups[16]{};
+        const unsigned nativeCapacity=nativePickupMessages.size()<32
+            ? static_cast<unsigned>(std::min<size_t>(16,32-nativePickupMessages.size())) : 0;
+        const unsigned nativeCount=doom_engine_native_pickups(engine,nativePickups,nativeCapacity);
+        for (unsigned i=0; i<nativeCount; ++i) nativePickupMessages.emplace_back(nativePickups[i].text);
+        if (!nativePickupMessages.empty() && timestamp>=nextNativePickupMessage &&
+                doom_messages_post(&pickupFeedback.messages,nativePickupMessages.front().c_str(),DOOM_MESSAGE_NORMAL,3000)) {
+            nativePickupMessages.pop_front();
+            nextNativePickupMessage=timestamp+1500;
+            pickupSoundQueued=true;
+        }
         if (lastTick && timestamp >= lastTick) {
             const unsigned elapsed = static_cast<unsigned>(std::min<uint64_t>(timestamp - lastTick, 250));
 #if defined(DOOM_MODE_LAB)
             DoomWorldHost host{};
             DoomWorldFrame worldFrame{};
-            worldFrame.fire = player.health > 0 && !frame.doom_dead && frame.fire;
+            worldFrame.fire = player.health > 0 && !frame.doom_dead && !combatSuspended && frame.fire;
             const bool hostBound = doom_engine_world_bind(engine, &host) != 0;
             float x = 0, y = 0, z = 0;
             if (hostBound && doom_engine_position(engine, &x, &y, &z)) {
@@ -875,38 +985,52 @@ struct Runtime {
                 log("WARN", "Dooming Light: projectile damage could not be applied.");
             hostWarnings |= newHostWarnings;
 #else
-            doom_advance(&player, elapsed, player.health > 0 && !frame.doom_dead && frame.fire,
+            doom_advance(&player, elapsed, player.health > 0 && !frame.doom_dead && !combatSuspended && frame.fire,
                          onDoomEvent, this);
 #endif
         }
         lastTick = timestamp;
         if (pickupSoundQueued) sound("DSITEMUP");
-        if (player.weapon != DOOM_CHAINSAW || player.switch_phase == 1 || player.health <= 0)
+        if (combatSuspended || player.weapon != DOOM_CHAINSAW || player.switch_phase == 1 || player.health <= 0)
             stopWeaponSound();
-        auto vehicleRequest=record<DlumaNoRequest>();
-        auto vehicle=resultRecord<DlumaVehicleStateResult>();
-        char vehicleType[64]{}, vehicleClass[128]{};
-        vehicle.vehicle_type.data=vehicleType; vehicle.vehicle_type.capacity=sizeof(vehicleType);
-        vehicle.class_name.data=vehicleClass; vehicle.class_name.capacity=sizeof(vehicleClass);
-        const DlumaStatus vehicleStatus=playerApi.vehicle_state
-            ? playerApi.vehicle_state(playerApi.context,&vehicleRequest,&vehicle) : DLUMA_STATUS_UNAVAILABLE;
-        doom_vehicle_feedback_advance(&vehicleFeedback,frameElapsed,vehicleStatus==DLUMA_STATUS_OK,
-            vehicle.player_present,vehicle.vehicle_present,vehicleType,vehicle.speed_mps);
         DoomPlayer renderPlayer{};
         doom_vehicle_feedback_present(&vehicleFeedback,&player,&renderPlayer);
+        const bool living=player.health>0 && !frame.doom_dead;
+        const int reachSide=living && frame.edge_active && (frame.edge_state==2 || frame.edge_state==3)
+            ? (frame.edge_state==2 ? -1 : 1) : 0;
+        int handSide=0;
+        float handY=0;
+        const DoomHudHandResult hand=doom_hud_hand_update(assets.hud.get(),frameElapsed,
+            reachSide,living && pickupSoundQueued,0,living && frame.parkour==2,&handSide,&handY);
+        const bool pickupGesture=doom_hud_pickup_gesture(assets.hud.get())!=0;
+        if (living && (hand!=DOOM_HUD_HAND_WEAPON || frame.interaction_active)) weaponReturning=true;
         float weaponX=0, weaponY=0;
         doom_hud_motion_update(assets.hud.get(),&player,frameElapsed,speed,
-            frame.parkour==2 ? 200.0f : frame.parkour==1 ? 12.0f : 0.0f,&weaponX,&weaponY);
+            living && (hand!=DOOM_HUD_HAND_WEAPON || frame.interaction_active) ? 200.0f :
+                frame.parkour==1 ? 12.0f : 0.0f,&weaponX,&weaponY);
+        if (!living || (hand==DOOM_HUD_HAND_WEAPON && !frame.interaction_active &&
+                doom_hud_lowering(assets.hud.get())<=1.0f)) weaponReturning=false;
+        handBusy=living && (hand!=DOOM_HUD_HAND_WEAPON || weaponReturning);
         if (doom_hud_render_layers(assets.hud.get(), &renderPlayer,
                 weaponPixels.data(), weaponPixels.size(), statusPixels.data(), statusPixels.size(),
                 messagePixels.data(), messagePixels.size(), doom_pickup_feedback_text(&pickupFeedback))) {
-            if (frame.edge_active && (frame.edge_state==2 || frame.edge_state==3) && player.health>0) {
-                if (doom_hud_render_reach(assets.hud.get(),weaponPixels.data(),weaponPixels.size(),
-                        frame.edge_state==2 ? -1 : 1)) weaponX=weaponY=0.0f;
+            if (living && hand==DOOM_HUD_HAND_VISIBLE && (!frame.interaction_active || pickupGesture) &&
+                    !doom_vehicle_feedback_blocks_weapons(&vehicleFeedback)) {
+                if (doom_hud_render_reach(assets.hud.get(),weaponPixels.data(),weaponPixels.size(),handSide)) {
+                    weaponX=0.0f; weaponY=handY;
+                } else {
+                    weaponPixels.fill(0); weaponX=weaponY=0.0f;
+                }
+            } else if (living && (hand==DOOM_HUD_HAND_HIDDEN ||
+                    (hand==DOOM_HUD_HAND_VISIBLE && frame.interaction_active && !pickupGesture))) {
+                weaponPixels.fill(0); weaponX=weaponY=0.0f;
             }
-            (void)doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),
+            const bool presented=doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),
                 messagePixels.data(), settings.hudFit ? 0.f : settings.hud / 100.f,
-                settings.weaponScale / 100.f,weaponX,weaponY);
+                settings.weaponScale / 100.f,weaponX,weaponY)!=0;
+            const bool important=pickupFeedback.messages.remaining_ms &&
+                pickupFeedback.messages.priority==DOOM_MESSAGE_IMPORTANT;
+            doom_engine_allow_native_pickups(engine,presented && living && !important && nativePickupMessages.size()<=16);
         }
         musicTick();
     }

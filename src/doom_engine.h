@@ -5,6 +5,8 @@
 #include "doom_core.h"
 #include "doom_world.h"
 #include "doom_world_visual_flags.h"
+#include "doom_damage_direction.h"
+#include "doom_movement_sampler.h"
 #include "doom_deaths.h"
 #include "doom_combat.h"
 
@@ -33,6 +35,8 @@ typedef struct DoomEngineFrame {
     int edge_active, ladder_active;
     unsigned damage_sequence;
     int damage_side, damage_amount, body_suppression;
+    unsigned damage_thread, update_thread;
+    DoomDamageDirectionSnapshot direction;
     int weapon_select;
     int weapon_slot;
     unsigned cheat_count;
@@ -69,6 +73,8 @@ int doom_engine_activate(DoomEngine *engine, uint32_t map_generation);
 void doom_engine_deactivate(DoomEngine *engine);
 int doom_engine_poll(DoomEngine *engine, DoomEngineFrame *frame);
 int doom_engine_attack(DoomEngine *engine, const DoomEvent *event);
+int doom_engine_report_shot(DoomEngine *engine, DoomWeapon weapon);
+int doom_engine_sample_movement(DoomEngine *engine, DoomMovementSnapshot *sample);
 const char *doom_engine_attack_reason(DoomEngine *engine);
 void doom_engine_attack_counts(DoomEngine *engine, unsigned *actors, unsigned *tested, unsigned *hit);
 int doom_engine_damage_observation(DoomEngine *engine, DoomDamageObservation *out);

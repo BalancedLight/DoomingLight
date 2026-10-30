@@ -23,6 +23,8 @@ void doom_hud_motion_update(DoomHud *hud, const DoomPlayer *player, unsigned ela
                             float *offset_x, float *offset_y);
 void doom_hud_motion_reset(DoomHud *hud);
 int doom_hud_render(DoomHud *hud, const DoomPlayer *player, uint8_t *rgba, size_t size);
+/* Replace the weapon layer with the IWAD hand. side is -1 (left) or 1 (right). */
+int doom_hud_render_reach(DoomHud *hud, uint8_t *weapon, size_t size, int side);
 /* Each transparent layer uses 320 pixels per row. The status and message
  * layers are respectively 32 and 16 rows; the weapon layer is 200 rows. */
 int doom_hud_render_layers(DoomHud *hud, const DoomPlayer *player,

@@ -1,6 +1,7 @@
 #include "doom_combat.h"
 #include "doom_hostility.h"
 #include "doom_hit_geometry.h"
+#include "doom_hit_resolver.h"
 #include <windows.h>
 #include <algorithm>
 #include <array>
@@ -64,12 +65,14 @@ struct DoomCombat {
     FindObjects find_objects = nullptr;
     NativeFree native_free = nullptr;
     GetControlParent get_parent = nullptr;
+    DoomHitResolver *hit_resolver = nullptr;
     void *world_player = nullptr, *world_level = nullptr;
     uint32_t world_generation = 0, world_epoch = 0;
     unsigned world_trace_budget = 0;
     uint64_t world_last_target = 0, world_splash_target = 0;
     Vec3 world_last_point{}, world_last_direction{};
     int world_last_mesh = -1;
+    int world_last_bone = -1, world_last_resolution = 0, world_last_reason = 0;
     float world_damage_scale = 1.0f;
     std::array<DoomTarget,DOOM_WORLD_MAX_SPLASH_TARGETS> actor_cache{};
     Vec3 actor_cache_center{};
@@ -114,9 +117,14 @@ extern "C" DoomCombat *doom_combat_create(void *game_module, void *engine_module
         c->find_objects=reinterpret_cast<FindObjects>(find_address);
     if (!c->camera_position || !c->camera_forward || !c->camera_up || !c->get_level ||
         !c->get_id || !c->get_object || !c->raytrace) { delete c; return nullptr; }
+    c->hit_resolver=doom_hit_resolver_create(game_module,engine_module);
     return c;
 }
-extern "C" void doom_combat_destroy(DoomCombat *combat) { delete combat; }
+extern "C" void doom_combat_destroy(DoomCombat *combat) {
+    if (!combat) return;
+    doom_hit_resolver_destroy(combat->hit_resolver);
+    delete combat;
+}
 extern "C" const char *doom_combat_last_reason(const DoomCombat *combat) {
     return combat ? combat->last_reason : "combat_missing";
 }
@@ -149,7 +157,7 @@ extern "C" unsigned doom_combat_drain_observations(DoomCombat *c, DoomDamageObse
     return count;
 }
 namespace {
-struct ActorHit { void *object; int id; Vec3 point; float fraction; };
+struct ActorHit { void *object; int id; Vec3 point; float fraction; int mesh, bone, resolution, reason; };
 int trace_actor(DoomCombat *, Vec3, Vec3, ActorHit *);
 bool read_actor_health(DoomCombat *c, void *object, float *value) {
     __try {
@@ -253,7 +261,7 @@ static int fire_hitscan(DoomCombat *c, void *player, void *level, void *camera,
     void *hit=nullptr; std::memcpy(&hit,collision.data()+24,sizeof(hit));
     std::memcpy(&mesh,collision.data()+32,sizeof(mesh));
     void *target=nullptr;
-    if (found_actor) { target=actor_hit.object; end=actor_hit.point; mesh=-1; }
+    if (found_actor) { target=actor_hit.object; end=actor_hit.point; mesh=actor_hit.mesh; }
     else if (world_hit && hit) target=object_from_control(c,hit);
     else {
         if (world_hit) queue_hitscan_impact(c,event->weapon,end,direction,DOOM_IMPACT_PUFF);
@@ -284,6 +292,10 @@ static int fire_hitscan(DoomCombat *c, void *player, void *level, void *camera,
                           event->weapon==DOOM_CHAINSAW ? 1 : 2;
 #if defined(DOOM_MODE_LAB)
     observe_before(c,target,id,event->weapon,damage,0.0f);
+    c->observation.mesh_element=mesh;
+    c->observation.hit_bone=found_actor ? actor_hit.bone : -1;
+    c->observation.model_resolution=found_actor ? actor_hit.resolution : 0;
+    c->observation.model_reason=found_actor ? actor_hit.reason : 0;
 #endif
     c->give_damage(player,target,damage,0.0f,actor+40,&end,&direction,mesh,damage_type,
                    &invalid_item,0.0f,0.0f,0);
@@ -327,6 +339,7 @@ int trace_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, DoomTrace *trace, b
     if (!std::isfinite(length2) || length2<=0 || length2>4194304.0f) return 0;
     std::memset(trace,0,sizeof(*trace));
     c->world_last_target=0;
+    c->world_last_bone=-1; c->world_last_resolution=0; c->world_last_reason=0;
     alignas(16) std::array<unsigned char,256> collision{};
     int mesh=-1; std::memcpy(collision.data()+32,&mesh,sizeof(mesh));
     auto *actor=static_cast<unsigned char *>(c->world_player);
@@ -342,7 +355,9 @@ int trace_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, DoomTrace *trace, b
         c->world_last_target=trace->target;
         c->world_last_point=actor_hit.point;
         c->world_last_direction=unit(delta);
-        c->world_last_mesh=-1;
+        c->world_last_mesh=actor_hit.mesh;
+        c->world_last_bone=actor_hit.bone; c->world_last_resolution=actor_hit.resolution;
+        c->world_last_reason=actor_hit.reason;
         return 1;
     }
     trace->hit=hit ? 1 : 0;
@@ -383,7 +398,7 @@ int sweep_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, float radius, DoomT
     const float offsets[9][2]={{0,0},{1,0},{-1,0},{0,1},{0,-1},
                                 {h,h},{h,-h},{-h,h},{-h,-h}};
     DoomTrace best{}; bool found=false; float best_fraction=2.0f;
-    uint64_t best_target=0; Vec3 best_point{},best_direction{}; int best_mesh=-1;
+    uint64_t best_target=0; Vec3 best_point{},best_direction{}; int best_mesh=-1, best_bone=-1, best_resolution=0, best_reason=0;
     for (unsigned i=0;i<9;++i) {
         Vec3 shift=i==0 ? Vec3{direction.x*radius,direction.y*radius,direction.z*radius}
             : Vec3{radius*(right.x*offsets[i][0]+up.x*offsets[i][1]),
@@ -404,11 +419,15 @@ int sweep_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, float radius, DoomT
             best.point={from.x+motion.x*fraction,from.y+motion.y*fraction,from.z+motion.z*fraction};
             best_target=c->world_last_target; best_point=c->world_last_point;
             best_direction=c->world_last_direction; best_mesh=c->world_last_mesh;
+            best_bone=c->world_last_bone; best_resolution=c->world_last_resolution;
+            best_reason=c->world_last_reason;
         }
     }
     if (!found) { std::memset(trace,0,sizeof(*trace)); trace->point=to; return 1; }
     *trace=best; c->world_last_target=best_target; c->world_last_point=best_point;
     c->world_last_direction=best_direction; c->world_last_mesh=best_mesh;
+    c->world_last_bone=best_bone; c->world_last_resolution=best_resolution;
+    c->world_last_reason=best_reason;
     return 1;
 #else
     (void)from; (void)to;
@@ -544,6 +563,7 @@ int trace_actor(DoomCombat *c, Vec3 from, Vec3 to, ActorHit *out) {
         c->actor_cache_valid=true;
     }
     float best=2.0f; void *best_object=nullptr; int best_id=-1;
+    Vec3 best_point{}; int best_mesh=-1, best_bone=-1, best_resolution=0, best_reason=0;
     const float begin[3]={from.x,from.y,from.z}, end[3]={to.x,to.y,to.z};
     for (unsigned i=0;i<c->actor_cache_count;++i) {
         uint64_t handle=c->actor_cache[i].handle;
@@ -564,11 +584,26 @@ int trace_actor(DoomCombat *c, Vec3 from, Vec3 to, ActorHit *out) {
         ++c->actor_boxes_hit;
         float health=0;
         if (!read_actor_health(c,target,&health) || health<=0) continue;
-        best=fraction; best_object=target; best_id=id;
+        Vec3 point{from.x+delta.x*fraction,from.y+delta.y*fraction,from.z+delta.z*fraction};
+        int mesh=-1, bone=-1;
+        DoomResolvedHit resolved{};
+        const int resolution=doom_hit_resolver_trace(c->hit_resolver,target,begin,end,&resolved);
+        if (resolution==DOOM_HIT_RESOLVED) {
+            point={resolved.point[0],resolved.point[1],resolved.point[2]};
+            const Vec3 offset{point.x-from.x,point.y-from.y,point.z-from.z};
+            const float model_fraction=dot(offset,delta)/(length*length);
+            if (!std::isfinite(model_fraction) || model_fraction<0 || model_fraction>1 || model_fraction>=best)
+                continue;
+            fraction=model_fraction; mesh=resolved.mesh_element; bone=static_cast<int>(resolved.bone);
+        }
+        best=fraction; best_object=target; best_id=id; best_point=point;
+        best_mesh=mesh; best_bone=bone; best_resolution=resolution;
+        best_reason=c->hit_resolver ? static_cast<int>(resolved.reason) : -1;
     }
     if (!best_object) return 0;
     out->object=best_object; out->id=best_id; out->fraction=best;
-    out->point={from.x+delta.x*best,from.y+delta.y*best,from.z+delta.z*best};
+    out->point=best_point; out->mesh=best_mesh; out->bone=best_bone; out->resolution=best_resolution;
+    out->reason=best_reason;
     return 1;
 }
 int world_nearby(void *ctx, DoomVec3 origin, float radius,
@@ -645,6 +680,10 @@ int damage_target(DoomCombat *c, uint64_t handle, int amount, DoomWeapon weapon)
     int invalid_item=-1;
 #if defined(DOOM_MODE_LAB)
     observe_before(c,target,id,weapon,damage,physics_damage);
+    c->observation.mesh_element=c->world_last_mesh;
+    c->observation.hit_bone=c->world_last_bone;
+    c->observation.model_resolution=c->world_last_resolution;
+    c->observation.model_reason=c->world_last_reason;
 #endif
     c->give_damage(c->world_player,target,damage,physics_damage,
                    static_cast<unsigned char *>(c->world_player)+40,&c->world_last_point,

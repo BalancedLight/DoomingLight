@@ -34,7 +34,9 @@ extern "C"
         DOOM_EVENT_MUSIC,
         DOOM_EVENT_CHEAT,
         DOOM_EVENT_DROPPED,
-        DOOM_EVENT_SOUND
+        DOOM_EVENT_SOUND,
+        /* Once per weapon cycle after its attack callbacks. */
+        DOOM_EVENT_WEAPON_FIRED
     } DoomEventType;
     typedef enum DoomCheatId
     {

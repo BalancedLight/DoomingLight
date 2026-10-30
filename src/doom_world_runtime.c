@@ -66,6 +66,8 @@ static void refund(DoomPlayer *player, int weapon)
 static void world_event(void *opaque, const DoomEvent *event)
 {
     RuntimeEventContext *ctx = (RuntimeEventContext *)opaque;
+    if (event && event->type==DOOM_EVENT_WEAPON_FIRED && projectile(event->weapon) && ctx->spawned_slot<0)
+        return;
     if (event && event->type == DOOM_EVENT_ATTACK && projectile(event->weapon))
     {
         if (!projectile_available(ctx->frame, event->weapon))

@@ -3,6 +3,7 @@
 #include "doom_fpp_body.h"
 #include "doom_damage_direction.h"
 #include "doom_player_voice.h"
+#include "doom_noise.h"
 #include "doom_hud_host.h"
 #include "doom_viewmodel.h"
 #include "doom_combat.h"
@@ -137,9 +138,13 @@ struct DoomEngine {
     bool fpp_body_started = false;
     DoomDamageDirection *damage_direction = nullptr;
     DoomPlayerVoice *player_voice = nullptr;
+    DoomNoise *noise = nullptr;
+    DoomMovementSampler *movement_sampler = nullptr;
     bool voice_installed = false, voice_replacement = false;
     unsigned damage_sequence = 0;
     int damage_side = 0, damage_amount = 0;
+    unsigned damage_thread = 0;
+    DoomDamageDirectionSnapshot direction_snapshot{};
     ULONGLONG next_hud_attempt = 0;
     bool health_static_ready = false;
     bool jump_static_ready = false;
@@ -153,13 +158,16 @@ struct DoomEngine {
     bool in_update_scope() const { return update_depth && game_thread == GetCurrentThreadId(); }
     void *game_object() const { return game ? *reinterpret_cast<void **>(game + 0x1D07F88) : nullptr; }
     void *local_player() const { void *g = game_object(); return g ? reinterpret_cast<GetPlayer>(game + 0x3C2D90)(g) : nullptr; }
-    bool gameplay() const {
+    bool gameplay_view() const {
         void *g = game_object(); if (!g || !local_player()) return false;
         void *input = field<void *>(g,200), *session = field<void *>(g,1288);
         void *manager = session ? field<void *>(session,192) : nullptr;
-        DWORD pid = 0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-        return pid == GetCurrentProcessId() && input && field<int>(input,308) == 0 && manager &&
+        return input && field<int>(input,308) == 0 && manager &&
             field<void *>(manager,64) && (field<int>(manager,88) == 1 || field<int>(manager,88) == 2);
+    }
+    bool gameplay() const {
+        DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(),&pid);
+        return pid==GetCurrentProcessId() && gameplay_view();
     }
 };
 static void *current_player_level(DoomEngine *e);
@@ -262,7 +270,11 @@ void __fastcall health_hook(void *receiver, float requested, unsigned char flags
     const int damage = static_cast<int>(std::floor(total));
     const int side=doom_damage_direction_side(e->damage_direction,actor);
     const int applied=doom_damage_from(e->player,damage,side);
-    if (applied>0) { ++e->damage_sequence; e->damage_side=side; e->damage_amount=applied; }
+    if (applied>0) {
+        ++e->damage_sequence; e->damage_side=side; e->damage_amount=applied;
+        e->damage_thread=GetCurrentThreadId();
+        (void)doom_damage_direction_snapshot(e->damage_direction,&e->direction_snapshot);
+    }
     if (e->player->health <= 0 && !e->death_wait && !e->death_committed) {
         e->death_actor=actor;
         e->death_wait=true;
@@ -356,6 +368,8 @@ extern "C" void doom_engine_destroy(DoomEngine *engine) {
     doom_engine_deactivate(engine);
     doom_player_voice_destroy(engine->player_voice);
     engine->player_voice=nullptr;
+    doom_noise_destroy(engine->noise); engine->noise=nullptr;
+    doom_movement_sampler_destroy(engine->movement_sampler); engine->movement_sampler=nullptr;
     doom_deaths_destroy(engine->deaths);
     engine->deaths = nullptr;
     doom_interaction_presentation_destroy(engine->presentation);
@@ -545,6 +559,7 @@ extern "C" int doom_engine_shot_basis(DoomEngine *e, DoomVec3 *origin, DoomVec3 
         !e->get_camera_forward || !e->level || !e->gameplay()) return 0;
     return current_shot_basis(e,origin,direction);
 }
+#if defined(DOOM_MODE_LAB)
 static int damage_view_read(DoomEngine *e,void **player,void **camera) {
     __try {
         if (!e->active || !e->level || current_player_level(e)!=e->level) return 0;
@@ -565,6 +580,7 @@ static int damage_view(void *context,void **player,void **camera) {
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     return damage_view_read(e,player,camera);
 }
+#endif
 extern "C" unsigned doom_engine_death_drain(DoomEngine *e, DoomDeathRecord *out, unsigned capacity) {
 #if defined(DOOM_MODE_LAB)
     if (!e || !out || !capacity) return 0;
@@ -649,6 +665,10 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
     e->engine_module = engine;
 #if defined(DOOM_MODE_LAB)
     if (stock && !e->player_voice) e->player_voice=doom_player_voice_create(game);
+    if (!e->noise) e->noise=doom_noise_create(game,engine);
+    wchar_t movementSamples[8]{};
+    if (stock && !e->movement_sampler && GetEnvironmentVariableW(L"DOOMING_LIGHT_MOVEMENT_SAMPLES",movementSamples,8)==1 && movementSamples[0]==L'1')
+        e->movement_sampler=doom_movement_sampler_create(game,engine,1);
 #endif
     e->get_level = reinterpret_cast<GetLevel>(GetProcAddress(engine,
         "?GetLevel@IGSObject@@QEBAPEAVILevel@@XZ"));
@@ -912,8 +932,9 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
         e->last_actor=actor; e->native_alive=native_alive; e->native_alive_known=true;
     }
     frame->paused=!has_vitals || !e->gameplay();
+    const bool gameplayView=has_vitals && e->gameplay_view();
 #if defined(DOOM_MODE_LAB)
-    const int suppressBody=!frame->paused && native_alive;
+    const int suppressBody=gameplayView && native_alive;
     frame->body_suppression=e->fpp_body_started && doom_fpp_body_update(suppressBody) ? suppressBody : -1;
     if (e->voice_installed)
         doom_player_voice_set_active(e->player_voice,!frame->paused && native_alive && e->voice_replacement);
@@ -921,12 +942,14 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     frame->damage_sequence=e->damage_sequence;
     frame->damage_side=e->damage_side;
     frame->damage_amount=e->damage_amount;
+    frame->damage_thread=e->damage_thread; frame->update_thread=e->game_thread;
+    frame->direction=e->direction_snapshot;
     frame->parkour=!frame->paused && native_alive ? current_parkour(e,actor,frame) : 0;
     if (frame->paused) {
         e->fire=false; e->keyboard_fire=false;
         e->death_space_request=false;
     }
-    if (frame->paused && has_vitals && e->hud)
+    if (frame->paused && has_vitals && e->hud && !gameplayView)
         doom_hud_host_hide(e->hud, e->level, e->generation);
 #if defined(DOOM_MODE_LAB)
     if (e->death_committed && e->hud)
@@ -1015,6 +1038,28 @@ extern "C" const char *doom_engine_attack_reason(DoomEngine *e) {
     if (!e) return "engine_missing";
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     return e->attack_reason;
+}
+extern "C" int doom_engine_report_shot(DoomEngine *e, DoomWeapon weapon) {
+    if (!e) return -1;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    if (!e->active || !e->in_update_scope() || !e->level || current_player_level(e)!=e->level) return -1;
+    return doom_noise_report(e->noise,e->local_player(),e->level,weapon);
+}
+extern "C" int doom_engine_sample_movement(DoomEngine *e,DoomMovementSnapshot *sample) {
+    if (!e || !sample) return -DOOM_SAMPLER_ARGUMENT;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    if (!e->movement_sampler) return 0;
+    if (!e->active || !e->in_update_scope() || current_player_level(e)!=e->level) return -DOOM_SAMPLER_ACTOR;
+    float x=0,y=0,z=0;
+    if (!current_player_position(e,&x,&y,&z)) return -DOOM_SAMPLER_ACTOR;
+    const float position[3]={x,y,z};
+    LARGE_INTEGER qpc{}; QueryPerformanceCounter(&qpc);
+    void *actor=e->local_player();
+    DoomEngineFrame traversal{};
+    const int parkour=current_parkour(e,actor,&traversal);
+    if (doom_movement_sampler_read(e->movement_sampler,actor,e->level,e->generation,e->game_thread,
+            static_cast<uint64_t>(qpc.QuadPart),position,traversal.move_state,parkour,sample)) return 1;
+    return -static_cast<int>(doom_movement_sampler_last_error(e->movement_sampler));
 }
 extern "C" void doom_engine_attack_counts(DoomEngine *e, unsigned *actors, unsigned *tested, unsigned *hit) {
     if (actors) *actors=0;

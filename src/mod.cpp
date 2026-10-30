@@ -124,6 +124,7 @@ struct Runtime {
     uint64_t nextPositionLog = 0;
     std::array<unsigned, DOOM_WEAPON_COUNT> attackLogCount{};
     std::array<unsigned, DOOM_WEAPON_COUNT> damageLogCount{};
+    std::array<unsigned, DOOM_WEAPON_COUNT> noiseLogCount{};
     unsigned inputLogCount = 0;
     int previousFire = -1, previousPaused = -1;
     DoomWorldRuntime world{};
@@ -139,6 +140,9 @@ struct Runtime {
     unsigned damageFeedbackLogs = 0;
     int lastBodySuppression = -2;
     unsigned bodyFeedbackLogs = 0;
+    uint64_t nextMovementSample = 0;
+    unsigned movementSampleCount = 0;
+    int lastMovementError = 0;
     std::array<unsigned, DOOM_WORLD_MAX_PROJECTILES> tracedAge{};
     std::array<int, DOOM_WORLD_MAX_PROJECTILES> tracedState{};
 #endif
@@ -522,16 +526,16 @@ struct Runtime {
         lastSplashSequence=latest;
     }
     void logDamage(const DoomDamageObservation& observation) const {
-        char before[32] = "unavailable", after[32] = "unavailable", message[224]{};
+        char before[32] = "unavailable", after[32] = "unavailable", message[288]{};
         if (observation.before_valid)
             std::snprintf(before, sizeof(before), "%.3f", static_cast<double>(observation.before));
         if (observation.after_valid)
             std::snprintf(after, sizeof(after), "%.3f", static_cast<double>(observation.after));
         std::snprintf(message, sizeof(message),
-            "Doom lab damage: weapon=%d target=%d native=%.3f physics=%.3f before=%s after=%s removed=%d",
+            "Doom lab damage: weapon=%d target=%d native=%.3f physics=%.3f before=%s after=%s removed=%d mesh=%d bone=%d model=%d reason=%d",
             observation.weapon, observation.target_id, static_cast<double>(observation.native_damage),
             static_cast<double>(observation.physics_damage),
-            before, after, observation.removed);
+            before, after, observation.removed,observation.mesh_element,observation.hit_bone,observation.model_resolution,observation.model_reason);
         log("INFO", message);
     }
 #endif
@@ -555,6 +559,19 @@ struct Runtime {
                 DoomDamageObservation observation{};
                 if (dispatched && doom_engine_damage_observation(self.engine, &observation))
                     self.logDamage(observation);
+            }
+#else
+            (void)result;
+#endif
+        }
+        else if (event->type == DOOM_EVENT_WEAPON_FIRED) {
+            const int result=doom_engine_report_shot(self.engine,static_cast<DoomWeapon>(event->weapon));
+#if defined(DOOM_MODE_LAB)
+            if (event->weapon>=0 && event->weapon<DOOM_WEAPON_COUNT &&
+                self.noiseLogCount[static_cast<size_t>(event->weapon)]++<16) {
+                char message[112]{};
+                std::snprintf(message,sizeof(message),"Doom lab weapon noise: weapon=%d result=%d",event->weapon,result);
+                self.log("INFO",message);
             }
 #else
             (void)result;
@@ -644,6 +661,7 @@ struct Runtime {
             deactivate(); generation = mapGeneration; haveGeneration = true;
 #if defined(DOOM_MODE_LAB)
             attackLogCount.fill(0); damageLogCount.fill(0); inputLogCount = 0; previousFire = previousPaused = -1;
+            noiseLogCount.fill(0); nextMovementSample=0; movementSampleCount=0; lastMovementError=0;
             worldTraceCount=0; tracedAge.fill(0); tracedState.fill(DOOM_PROJECTILE_FREE);
             lastSplashSequence=0; splashLogCount=0;
             lastTraversal=UINT64_MAX; traversalLogCount=0;
@@ -692,10 +710,12 @@ struct Runtime {
         }
         previousFire = frame.fire; previousPaused = frame.paused;
         if (frame.damage_sequence && frame.damage_sequence!=lastDamageSequence && damageFeedbackLogs++<64) {
-            char message[192]{};
+            char message[320]{};
             std::snprintf(message,sizeof(message),
-                "Doom lab incoming: sequence=%u damage=%d side=%d face=%d health=%d armor=%d",
-                frame.damage_sequence,frame.damage_amount,frame.damage_side,player.face_index,player.health,player.armor);
+                "Doom lab incoming: seq=%u damage=%d side=%d face=%d health=%d armor=%d hooks=%u local=%u reads=%u matched=%u reason=%d hit_thread=%u update_thread=%u",
+                frame.damage_sequence,frame.damage_amount,frame.damage_side,player.face_index,player.health,player.armor,
+                frame.direction.hook_calls,frame.direction.local_calls,frame.direction.side_reads,frame.direction.matched_reads,
+                frame.direction.last_reason,frame.damage_thread,frame.update_thread);
             log("INFO",message);
         }
         if (frame.body_suppression!=lastBodySuppression && bodyFeedbackLogs++<32) {
@@ -762,6 +782,29 @@ struct Runtime {
         const unsigned frameElapsed = lastTick && timestamp >= lastTick
             ? static_cast<unsigned>(std::min<uint64_t>(timestamp - lastTick, 250)) : 0;
         const float speed=movementSpeed(timestamp,player.health>0 && !frame.doom_dead);
+#if defined(DOOM_MODE_LAB)
+        if (timestamp>=nextMovementSample && movementSampleCount<1800) {
+            DoomMovementSnapshot sample{};
+            const int status=doom_engine_sample_movement(engine,&sample);
+            if (status==1) {
+                char message[384]{};
+                std::snprintf(message,sizeof(message),
+                    "Doom lab movement query: ms=%llu qpc=%llu id=%d position=%.4f,%.4f,%.4f wanted=%.4f,%.4f,%.4f accel=%.4f decel=%.4f in_air=%d move=%u parkour=%d thread=%u",
+                    static_cast<unsigned long long>(timestamp),static_cast<unsigned long long>(sample.qpc),sample.actor_id,
+                    static_cast<double>(sample.position[0]),static_cast<double>(sample.position[1]),static_cast<double>(sample.position[2]),
+                    static_cast<double>(sample.wanted_world_speed[0]),static_cast<double>(sample.wanted_world_speed[1]),static_cast<double>(sample.wanted_world_speed[2]),
+                    static_cast<double>(sample.walk_acceleration),static_cast<double>(sample.walk_deceleration),sample.in_air,
+                    sample.move_state,sample.parkour,sample.thread_id);
+                log("INFO",message); ++movementSampleCount;
+            } else if (status<0 && status!=lastMovementError) {
+                char message[96]{};
+                std::snprintf(message,sizeof(message),"Doom lab movement query unavailable: stage=%d",-status);
+                log("INFO",message);
+            }
+            lastMovementError=status<0 ? status : 0;
+            nextMovementSample=timestamp+100;
+        }
+#endif
         doom_pickup_feedback_begin_frame(&pickupFeedback, frameElapsed);
         pickupSoundQueued = false;
         if (lastTick && timestamp >= lastTick) {
@@ -856,10 +899,15 @@ struct Runtime {
             frame.parkour==2 ? 200.0f : frame.parkour==1 ? 12.0f : 0.0f,&weaponX,&weaponY);
         if (doom_hud_render_layers(assets.hud.get(), &renderPlayer,
                 weaponPixels.data(), weaponPixels.size(), statusPixels.data(), statusPixels.size(),
-                messagePixels.data(), messagePixels.size(), doom_pickup_feedback_text(&pickupFeedback)))
+                messagePixels.data(), messagePixels.size(), doom_pickup_feedback_text(&pickupFeedback))) {
+            if (frame.edge_active && (frame.edge_state==2 || frame.edge_state==3) && player.health>0) {
+                if (doom_hud_render_reach(assets.hud.get(),weaponPixels.data(),weaponPixels.size(),
+                        frame.edge_state==2 ? -1 : 1)) weaponX=weaponY=0.0f;
+            }
             (void)doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),
                 messagePixels.data(), settings.hudFit ? 0.f : settings.hud / 100.f,
                 settings.weaponScale / 100.f,weaponX,weaponY);
+        }
         musicTick();
     }
     DlumaStatus prepare(const DlumaApiV1* host) {

@@ -236,6 +236,10 @@ static void fire_weapon(DoomPlayer *p, DoomEventFn emit, void *ctx)
             }
         }
     }
+    /* The chaingun and chainsaw have two attack actions per cycle. Emit
+     * after the first action and suppress the second action's duplicate. */
+    if ((w != DOOM_CHAINGUN && w != DOOM_CHAINSAW) || p->cooldown > 4)
+        send(emit, ctx, DOOM_EVENT_WEAPON_FIRED, 0, w, 0, 0, 0);
 }
 
 static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)

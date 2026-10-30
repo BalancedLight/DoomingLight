@@ -133,6 +133,31 @@ static void draw(DoomHud *hud, HudCanvas *canvas, const char *name, int x, int y
         }
     }
 }
+int doom_hud_render_reach(DoomHud *hud, uint8_t *weapon, size_t size, int side)
+{
+    const DoomImage *image;
+    unsigned x, y, width, height;
+    int left, top;
+    if (!hud || !weapon || size < 320u * 200u * 4u || (side != -1 && side != 1)) return 0;
+    image = patch(hud, "PUNGA0");
+    if (!image || !image->width || !image->height || image->width > 213 || image->height > 112) return 0;
+    width = (image->width * 3u + 1u) / 2u;
+    height = (image->height * 3u + 1u) / 2u;
+    left = side < 0 ? 0 : 320 - (int)width;
+    top = 168 - (int)height;
+    memset(weapon, 0, 320u * 200u * 4u);
+    for (y = 0; y < height; ++y) {
+        unsigned source_y = y * 2u / 3u;
+        for (x = 0; x < width; ++x) {
+            unsigned source_x = x * 2u / 3u;
+            const uint8_t *pixel;
+            if (side < 0) source_x = image->width - 1u - source_x;
+            pixel = image->rgba + ((size_t)source_y * image->width + source_x) * 4u;
+            if (pixel[3]) memcpy(weapon + ((size_t)(top + (int)y) * 320u + (unsigned)left + x) * 4u, pixel, 4);
+        }
+    }
+    return 1;
+}
 static void number(DoomHud *hud, HudCanvas *canvas, int value, int right, int y, int small)
 {
     char name[9];

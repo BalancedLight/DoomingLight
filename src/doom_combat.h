@@ -11,6 +11,7 @@ typedef struct DoomDamageObservation {
     uint32_t sequence;
     int weapon, target_id, before_valid, after_valid, removed;
     float native_damage, physics_damage, before, after;
+    int mesh_element, hit_bone, model_resolution, model_reason;
 } DoomDamageObservation;
 DoomCombat *doom_combat_create(void *game_module, void *engine_module);
 void doom_combat_destroy(DoomCombat *combat);

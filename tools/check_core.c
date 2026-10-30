@@ -1,5 +1,6 @@
 /* Focused checks for Doom Mode's player-state contracts. */
 #include "doom_core.h"
+#include "doom_menu_guard.h"
 #include <assert.h>
 
 static int attacks, spread_seen, music_count, music_track;
@@ -27,6 +28,11 @@ int main(void)
 {
     DoomPlayer player;
     unsigned i;
+    /* Native combat actions are suppressed while parkour, use and pause remain available. */
+    assert(doom_menu_guard_blocks_action(18) && doom_menu_guard_blocks_action(139) &&
+           doom_menu_guard_blocks_action(276) && doom_menu_guard_blocks_action(167));
+    assert(!doom_menu_guard_blocks_action(11) && !doom_menu_guard_blocks_action(20) &&
+           !doom_menu_guard_blocks_action(54) && !doom_menu_guard_blocks_action(126));
     doom_reset(&player, 0);
     assert(player.health == 100 && player.armor == 0 && player.ammo[0] == 200);
     assert(!(player.owned_mask & (1u << DOOM_SUPER_SHOTGUN)));

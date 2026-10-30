@@ -23,16 +23,11 @@ template<class T> T field(const void *base, size_t offset) {
     return *reinterpret_cast<const T *>(static_cast<const unsigned char *>(base)+offset);
 }
 
-bool menu_action(unsigned id) {
-    // The exact Player input-action registry maps these to map, inventory,
-    // quest log, upgrades and the direct inventory-menu shortcut.
-    return id==8 || id==70 || id==122 || id==131 || id==253;
-}
-
 bool suppress(void *action, float *neutral) {
     if (!enabled.load(std::memory_order_acquire) || !action || !neutral || !game) return false;
     __try {
-        if (!menu_action(field<unsigned>(action,0))) return false;
+        const unsigned id=field<unsigned>(action,0);
+        if (!doom_menu_guard_blocks_action(id)) return false;
         void *owner=field<void *>(action,64);
         void *singleton=field<void *>(game,0x1d07f88);
         if (!singleton || field<void *>(singleton,0)!=game+0x157d5f8 ||

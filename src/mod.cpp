@@ -734,7 +734,11 @@ struct Runtime {
         }
         if (!active) { (void)releaseMusicLease(); return; }
         DoomEngineFrame frame{};
-        if (!doom_engine_poll(engine, &frame) || !frame.ready) { deactivate(); return; }
+        if (!doom_engine_poll(engine, &frame) || !frame.ready) {
+            deactivate();
+            beginAssets();
+            return;
+        }
         doom_engine_allow_native_pickups(engine,0);
         doom_audio_poll(audio);
         doom_audio_pause(audio, frame.paused && !frame.noclip_input);

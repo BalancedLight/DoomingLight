@@ -247,6 +247,7 @@ uintptr_t __fastcall level_destroy_hook(void *receiver) {
             e->world_renderer=nullptr; e->world_renderer_level=nullptr;
             e->world_renderer_generation=0;
         }
+        if (level && level==e->level) e->active=false;
     }
     return stock_level_destroy(receiver);
 }
@@ -1068,6 +1069,8 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     if (!e) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active) return 0;
+    void *live_level=current_player_level(e);
+    if (live_level && e->level && live_level!=e->level) return 0;
     if (e->player && (e->player->god || e->player->invulnerability_tics || e->player->health <= 0))
         e->damage_carry=0.0;
     if (!e->in_update_scope() || !e->level) return 0;

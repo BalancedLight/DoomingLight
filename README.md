@@ -98,4 +98,7 @@ Doom graphics, sounds and music are loaded from the user's local IWAD.
 SoundFont music uses the separately selected SF2 file. The distribution
 contains no Doom game data or SoundFonts.
 
+## Disclaimer
+Some additions to this application were created with assistance from AI
+
 > "In here..? **Doom.**"

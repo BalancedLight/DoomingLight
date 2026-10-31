@@ -9,6 +9,7 @@ typedef struct DoomPlayerVoiceObservation {
     uint32_t kind;       /* 1: player sound category; 2: local PlaySound2D */
     uint32_t category;
     uint32_t caller_rva; /* UINT32_MAX when called outside gamedll */
+    char cue[64];        /* bounded local-view cue; empty if unavailable */
 } DoomPlayerVoiceObservation;
 /* The caller must first verify the exact supported Player build. */
 DoomPlayerVoice *doom_player_voice_create(void *game_module);

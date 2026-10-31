@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstring>
 
-#ifdef DOOM_MODE_LAB
+#ifdef DOOM_MODE_RUNTIME
 namespace {
 using GetFx = void *(__fastcall *)(void *);
 using CreateDef = void *(__fastcall *)(void **);

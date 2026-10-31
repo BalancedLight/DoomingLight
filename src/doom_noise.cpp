@@ -1,6 +1,6 @@
 #include "doom_noise.h"
 
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
 #include <windows.h>
 #include <cmath>
 #include <cstring>

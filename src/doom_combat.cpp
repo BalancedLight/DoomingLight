@@ -382,7 +382,7 @@ int trace_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, DoomTrace *trace, b
 int sweep_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, float radius, DoomTrace *trace) {
     if (!c || !trace || !std::isfinite(radius) || radius<0) return 0;
     if (radius==0.0f) return trace_segment(c,from,to,trace);
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
     /* Candidate volume approximation: one forward and eight perimeter rays.
        Thin geometry between samples can still be missed. */
     if (radius>32.0f || c->world_trace_budget<9) return 0;
@@ -654,7 +654,7 @@ int damage_target(DoomCombat *c, uint64_t handle, int amount, DoomWeapon weapon)
     int damage_type=2;
     if (weapon!=DOOM_PISTOL && weapon!=DOOM_CHAINGUN &&
         weapon!=DOOM_SHOTGUN && weapon!=DOOM_SUPER_SHOTGUN) {
-#if defined(DOOM_MODE_LAB) && defined(DOOM_LAB_HOSTILITY) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
         if (weapon!=DOOM_ROCKET && weapon!=DOOM_PLASMA && weapon!=DOOM_BFG) return 0;
         damage_type=weapon==DOOM_PLASMA ? 2 : 3;
 #else

@@ -6,7 +6,7 @@
 #include <cstring>
 #include <new>
 
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
 namespace {
 constexpr uintptr_t InteractionControllerVtable = 0x1809C78;
 constexpr uintptr_t InteractionLookVtable = 0x1809E08;

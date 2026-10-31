@@ -1,7 +1,7 @@
 #include "doom_noclip.h"
 #include "doom_core.h"
 
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -94,7 +94,17 @@ bool current(Snapshot *out, int *reason=nullptr) {
 bool input_ready(const Snapshot &snapshot) {
     DWORD pid=0;
     GetWindowThreadProcessId(GetForegroundWindow(),&pid);
-    return pid==GetCurrentProcessId() && field<int>(snapshot.input,308)==0;
+    if (pid!=GetCurrentProcessId()) return false;
+    const int blocked=field<int>(snapshot.input,308);
+    if (blocked==0) return true;
+    if (!snapshot.flying || blocked!=1 || !flying.load(std::memory_order_acquire)) return false;
+    auto *camera=static_cast<unsigned char *>(field<void *>(snapshot.camera,80));
+    if (!camera || field<void *>(camera,16)!=game+0x19248e8 ||
+        field<unsigned char>(camera,716)!=1) return false;
+    /* FreeCamera owns one Player-target block. Any additional block belongs
+       to another system, such as a menu, and keeps gameplay input suspended. */
+    return field<void *>(snapshot.camera,80)==camera &&
+        field<unsigned char>(camera,716)==1 && field<int>(snapshot.input,308)==1;
 }
 
 bool own_free_camera(void *object) {

@@ -1,7 +1,7 @@
 #include "doom_menu_guard.h"
 #include "doom_noclip.h"
 
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -32,8 +32,10 @@ bool suppress(void *action, float *neutral) {
         void *owner=field<void *>(action,64);
         void *singleton=field<void *>(game,0x1d07f88);
         if (!singleton || field<void *>(singleton,0)!=game+0x157d5f8 ||
-            !owner || field<void *>(singleton,200)!=owner || field<int>(owner,308)!=0)
+            !owner || field<void *>(singleton,200)!=owner)
             return false;
+        const bool flying=doom_noclip_input_ready()!=0;
+        if (field<int>(owner,308)!=0 && !flying) return false;
         void *session=field<void *>(singleton,1288);
         void *camera_manager=session ? field<void *>(session,192) : nullptr;
         DWORD pid=0;
@@ -42,7 +44,7 @@ bool suppress(void *action, float *neutral) {
         const bool ordinary=camera_manager && field<void *>(camera_manager,64) &&
             (field<int>(camera_manager,88)==1 || field<int>(camera_manager,88)==2) &&
             reinterpret_cast<GetPlayer>(game+0x3c2d90)(singleton);
-        if (!ordinary && !doom_noclip_input_ready()) return false;
+        if (!ordinary && !flying) return false;
         // InputAction applies this inversion before dispatching its listeners.
         *neutral=(field<unsigned char>(action,16)&0x10u) ? 1.0f : 0.0f;
         return true;

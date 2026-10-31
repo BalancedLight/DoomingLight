@@ -3,7 +3,7 @@
   "api_version": "1.0",
   "id": "doom.mode",
   "name": "Dooming Light",
-  "version": "0.1.0-dev",
+  "version": "0.1.0-beta.1",
   "description": "Doom weapons, status bar, sounds and music for Dying Light maps.",
   "author": "DLUMA",
   "language": "native",

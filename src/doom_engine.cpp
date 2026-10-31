@@ -180,7 +180,7 @@ struct DoomEngine {
     }
 };
 static void *current_player_level(DoomEngine *e);
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
 static void *current_player_camera(DoomEngine *e) {
     __try {
         void *game=e->game_object();
@@ -415,7 +415,7 @@ extern "C" int doom_engine_begin_update(DoomEngine *e) {
         e->mutex.lock();
         if (!e->update_depth) e->game_thread=GetCurrentThreadId();
         ++e->update_depth;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
         if (!e->active && e->viewmodel_pending && doom_viewmodel_stop()) e->viewmodel_pending=false;
         if (!e->active && e->fpp_body_started && doom_fpp_body_stop()) e->fpp_body_started=false;
         if (!e->active && e->damage_direction && doom_damage_direction_stop(e->damage_direction))
@@ -599,7 +599,7 @@ extern "C" int doom_engine_shot_basis(DoomEngine *e, DoomVec3 *origin, DoomVec3 
         !e->get_camera_forward || !e->level || !e->gameplay()) return 0;
     return current_shot_basis(e,origin,direction);
 }
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
 static int damage_view_read(DoomEngine *e,void **player,void **camera) {
     __try {
         if (!e->active || !e->level || current_player_level(e)!=e->level) return 0;
@@ -622,7 +622,7 @@ static int damage_view(void *context,void **player,void **camera) {
 }
 #endif
 extern "C" unsigned doom_engine_death_drain(DoomEngine *e, DoomDeathRecord *out, unsigned capacity) {
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e || !out || !capacity) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active || !e->deaths_started || !e->in_update_scope() || !e->level) return 0;
@@ -722,9 +722,12 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
     bool tools = !stock && hash_file(game,tools_game_hash) && hash_file(engine,tools_engine_hash);
     if (!stock && !tools) return 0;
     e->stock_profile=stock;
+#if !defined(DOOM_MODE_LAB)
+    if (!stock) return 0;
+#endif
     e->game = reinterpret_cast<unsigned char *>(game);
     e->engine_module = engine;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (stock && !e->player_voice) e->player_voice=doom_player_voice_create(game);
     if (stock && !e->native_pickup) e->native_pickup=doom_native_pickup_create(game);
     if (!e->noise) e->noise=doom_noise_create(game,engine);
@@ -741,7 +744,7 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
     e->get_camera_forward = reinterpret_cast<GetPosition>(GetProcAddress(engine,
         "?GetForwardVector@IBaseCamera@@QEBA?BVvec3@@XZ"));
     if (!e->combat) e->combat = doom_combat_create(game,engine);
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e->deaths) e->deaths = doom_deaths_create(game,engine);
     if (!e->presentation) e->presentation = doom_interaction_presentation_create(game);
 #endif
@@ -784,9 +787,8 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
     auto action_table = reinterpret_cast<void **>(e->game + 0x17DEF68);
     e->interaction_static_ready = action_table[6] == e->game + 0xB090D0 &&
         !std::memcmp(e->game+0xB090D0,action_prefix,sizeof(action_prefix));
-    /* The hook remains gated until health scaling and native side effects have
-       been observed on both supported Player routes. */
-#if defined(DOOM_MODE_LAB)
+    /* Public runtime activation is restricted to the supported exact profile. */
+#if defined(DOOM_MODE_RUNTIME)
     return e->player_static_ready && e->get_level && e->get_position && e->combat &&
         (e->capabilities & DOOM_ENGINE_INPUT) && e->health_static_ready &&
         e->jump_static_ready && e->interaction_static_ready;
@@ -798,7 +800,7 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
     if (!e) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->in_update_scope()) return 0;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (e->death_presentation_started) {
         if (!doom_death_presentation_stop()) return 0;
         e->death_presentation_started=false;
@@ -875,7 +877,7 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
         e->level=current_player_level(e); e->active=e->level != nullptr;
     }
     if (!e->active) { doom_engine_deactivate(e); return 0; }
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (!doom_menu_guard_start(e->game,e->stock_profile ? 1 : 0))
         OutputDebugStringA("Doom Mode Lab: player menu control unavailable\n");
     e->noclip_started=doom_noclip_start(e->game,e->engine_module,e->level,e->generation,e->stock_profile)!=0;
@@ -925,7 +927,7 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
         e->damage_direction=nullptr;
     if (e->fpp_body_started && e->in_update_scope() && doom_fpp_body_stop())
         e->fpp_body_started=false;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (e->death_presentation_started && e->in_update_scope() &&
         doom_death_presentation_stop()) e->death_presentation_started=false;
     if (e->world_renderer && e->in_update_scope() && e->level &&
@@ -949,7 +951,7 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
 #endif
     if (e->hud && e->in_update_scope()) {
         void *level = cleanupLevel;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
         doom_hud_host_death_screen(e->hud, level, e->generation, 0);
 #endif
         doom_hud_host_destroy(e->hud, level, e->generation);
@@ -997,7 +999,7 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     const bool fromNoclip=e->noclip_return_pending;
     void *actor=nullptr; float native_health=0.0f; bool native_alive=false;
     const bool has_vitals=current_player_vitals(e,&actor,&native_health,&native_alive)!=0;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (e->deaths_started)
         doom_deaths_context(e->deaths, has_vitals ? actor : nullptr,
             has_vitals ? e->level : nullptr, e->generation);
@@ -1019,7 +1021,7 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     frame->paused=!has_vitals || !e->gameplay();
     if (frame->paused) doom_native_pickup_accept(e->native_pickup,0);
     const bool gameplayView=has_vitals && e->gameplay_view();
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     const int suppressBody=gameplayView && native_alive;
     frame->body_suppression=e->fpp_body_started && doom_fpp_body_update(suppressBody) ? suppressBody : -1;
     if (e->voice_installed)
@@ -1034,7 +1036,7 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     frame->damage_thread=e->damage_thread; frame->update_thread=e->game_thread;
     frame->direction=e->direction_snapshot;
     frame->parkour=!frame->paused && native_alive ? current_parkour(e,actor,frame) : 0;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (e->stock_profile && !frame->paused && native_alive)
         frame->interaction_active=doom_interaction_state(e->game,actor)>0;
 #endif
@@ -1044,7 +1046,7 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     }
     if (frame->paused && (has_vitals || frame->noclip) && e->hud && !gameplayView && !frame->noclip_input)
         doom_hud_host_hide(e->hud, e->level, e->generation);
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     if (e->death_committed && e->hud)
         doom_hud_host_death_screen(e->hud, e->level, e->generation, 1);
     if (e->death_presentation_started) {
@@ -1057,7 +1059,7 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
         has_vitals && native_alive && actor == e->death_actor &&
         current_player_level(e) == e->level) {
         bool commit_ready=true;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
         if (e->death_presentation_started) {
             doom_death_presentation_set(current_player_camera(e), actor, e->generation, 0, 41);
             if (!doom_death_presentation_stop()) commit_ready=false;
@@ -1081,13 +1083,13 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     frame->doom_dead=e->death_wait ? 1 : 0;
     frame->ready=1; frame->alive=has_vitals ? native_alive : e->native_alive;
     if (!frame->paused && e->respawn_pending) {
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
         if (e->hud)
             doom_hud_host_death_screen(e->hud, e->level, e->generation, 0);
 #endif
         e->death_actor=nullptr; e->death_wait=false; e->death_committed=false;
         e->death_space_armed=false; e->death_space_request=false;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
         if (!e->death_presentation_started)
             e->death_presentation_started=doom_death_presentation_start(e->game,e->engine_module)!=0;
 #endif
@@ -1196,7 +1198,7 @@ extern "C" int doom_engine_world_bind(DoomEngine *e, DoomWorldHost *host) {
     return 1;
 }
 extern "C" int doom_engine_lab_projectile_ready(DoomEngine *e, DoomWeapon weapon) {
-#if defined(DOOM_MODE_LAB) && defined(DOOM_LAB_HOSTILITY) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active || !e->in_update_scope() || !e->level ||
@@ -1218,7 +1220,7 @@ extern "C" void doom_engine_world_unbind(DoomEngine *e) {
     e->world_host_flags=0;
 }
 extern "C" int doom_engine_world_sprites_open(DoomEngine *e) {
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active || !e->in_update_scope() || !e->level ||
@@ -1238,7 +1240,7 @@ extern "C" int doom_engine_world_sprites_open(DoomEngine *e) {
 }
 extern "C" uint32_t doom_engine_world_sprite_add(DoomEngine *e, const uint8_t *rgba,
                                                  unsigned edge, DoomVec3 position, float size_metres, unsigned flags) {
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e || !rgba) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active || !e->in_update_scope() || !e->world_renderer ||
@@ -1252,7 +1254,7 @@ extern "C" uint32_t doom_engine_world_sprite_add(DoomEngine *e, const uint8_t *r
 #endif
 }
 extern "C" int doom_engine_world_sprite_move(DoomEngine *e, uint32_t token, DoomVec3 position) {
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active || !e->in_update_scope() || !e->world_renderer ||
@@ -1266,7 +1268,7 @@ extern "C" int doom_engine_world_sprite_move(DoomEngine *e, uint32_t token, Doom
 #endif
 }
 extern "C" int doom_engine_world_sprite_update(DoomEngine *e, uint32_t token,const uint8_t *rgba,unsigned edge) {
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e || !rgba || !token) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active || !e->in_update_scope() || !e->world_renderer ||
@@ -1278,7 +1280,7 @@ extern "C" int doom_engine_world_sprite_update(DoomEngine *e, uint32_t token,con
 #endif
 }
 extern "C" int doom_engine_world_sprite_remove(DoomEngine *e, uint32_t token) {
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->active || !e->in_update_scope() || !e->world_renderer ||
@@ -1290,7 +1292,7 @@ extern "C" int doom_engine_world_sprite_remove(DoomEngine *e, uint32_t token) {
 #endif
 }
 extern "C" int doom_engine_world_sprites_close(DoomEngine *e) {
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
     if (!e) return 0;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->world_renderer) return 1;

@@ -126,7 +126,7 @@ struct Runtime {
     uint64_t motionSampleAt = 0;
     unsigned lastDamageSequence = 0;
     float motionX = 0.0f, motionZ = 0.0f, lastMotionSpeed = 0.0f;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     uint64_t nextPositionLog = 0;
     std::array<unsigned, DOOM_WEAPON_COUNT> attackLogCount{};
     std::array<unsigned, DOOM_WEAPON_COUNT> damageLogCount{};
@@ -461,7 +461,7 @@ struct Runtime {
         motionX=x; motionZ=z; motionSampleAt=timestamp; lastMotionSpeed=speed;
         return speed;
     }
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     bool projectileBasis(DoomWorldFrame& frame) const {
         DoomVec3 eye{}, forward{};
         if (!frame.host || !frame.host->aim || !frame.host->sweep ||
@@ -510,6 +510,7 @@ struct Runtime {
             tracedState[i]=state;
         }
     }
+#if defined(DOOM_MODE_LAB)
     void logSplash() {
         const uint32_t latest=world.world.splash_sequence;
         if (latest<=lastSplashSequence) return;
@@ -537,6 +538,7 @@ struct Runtime {
         }
         lastSplashSequence=latest;
     }
+#endif
     void logDamage(const DoomDamageObservation& observation) const {
         char before[32] = "unavailable", after[32] = "unavailable", message[288]{};
         if (observation.before_valid)
@@ -631,7 +633,7 @@ struct Runtime {
             } else (void)doom_messages_post(&self.pickupFeedback.messages,"IMPOSSIBLE SELECTION",DOOM_MESSAGE_IMPORTANT,4000);
         }
     }
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
     static void onPickup(void* context, DoomDrop kind, int amount) {
         Runtime& self = *static_cast<Runtime*>(context);
         doom_pickup_feedback_record(&self.pickupFeedback, kind, amount);
@@ -668,7 +670,7 @@ struct Runtime {
         doom_vehicle_feedback_reset(&vehicleFeedback);
         pickupSoundQueued = false;
         sawStartupUntil = 0;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
         if (worldDisplay && engine) (void)doom_world_display_close(worldDisplay, engine);
         doom_world_runtime_reset(&world, 0);
         worldWarnings = hostWarnings = 0;
@@ -700,7 +702,7 @@ struct Runtime {
             assets = std::move(loaded);
             if (!assets.wad || !assets.hud) { log("WARN", "Dooming Light needs a valid Doom or Doom II WAD. Set its path in Mods."); return; }
             doom_reset(&player, doom_wad_is_doom2(assets.wad.get()));
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
             doom_world_runtime_reset(&world, generation);
 #endif
             doom_engine_reset_damage(engine);
@@ -738,8 +740,8 @@ struct Runtime {
         }
         for (unsigned i=0; i<frame.voice_observation_count && i<64; ++i) {
             const auto &v=frame.voice_observations[i];
-            char message[128]{};
-            std::snprintf(message,sizeof(message),"Doom lab voice: kind=%u category=%u caller=%08X",v.kind,v.category,v.caller_rva);
+            char message[224]{};
+            std::snprintf(message,sizeof(message),"Doom lab voice: kind=%u category=%u caller=%08X cue=%s",v.kind,v.category,v.caller_rva,v.cue);
             log("INFO",message);
         }
 #endif
@@ -838,7 +840,7 @@ struct Runtime {
             doom_reset(&player, player.doom2);
             deathSoundPlayed=false;
             nativePickupMessages.clear(); nextNativePickupMessage=0;
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
             doom_world_runtime_reset(&world, generation);
             worldWarnings = hostWarnings = 0;
             lastSplashSequence=0; splashLogCount=0;
@@ -919,7 +921,7 @@ struct Runtime {
         }
         if (lastTick && timestamp >= lastTick) {
             const unsigned elapsed = static_cast<unsigned>(std::min<uint64_t>(timestamp - lastTick, 250));
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
             DoomWorldHost host{};
             DoomWorldFrame worldFrame{};
             worldFrame.fire = player.health > 0 && !frame.doom_dead && !combatSuspended && frame.fire;
@@ -952,17 +954,23 @@ struct Runtime {
                 const float distance=std::sqrt(dx*dx+dy*dy);
                 sound(impacts[i].lump,std::clamp((38.0f-distance)/32.0f,0.0f,1.0f));
             }
+#if defined(DOOM_MODE_LAB)
             logWorld();
             logSplash();
+#endif
             if (hostBound) doom_engine_world_unbind(engine);
             DoomDamageObservation observations[64]{};
             const unsigned observationCount=doom_engine_drain_damage_observations(engine, observations, 64);
+#if defined(DOOM_MODE_LAB)
             for (unsigned i=0; i<observationCount; ++i) {
                 const int weapon=observations[i].weapon;
                 if ((weapon==DOOM_ROCKET || weapon==DOOM_PLASMA || weapon==DOOM_BFG) &&
                     damageLogCount[static_cast<size_t>(weapon)]++ < 16)
                     logDamage(observations[i]);
             }
+#else
+            (void)observationCount;
+#endif
             if (worldDisplay && !doom_world_display_update(worldDisplay, engine, assets.wad.get(),
                                                            &world.world, generation) && !worldDisplayWarned) {
                 log("WARN", "Dooming Light: world sprites could not be displayed.");
@@ -1048,10 +1056,10 @@ struct Runtime {
         if (service(DLUMA_SERVICE_PLAYER_V1, playerApi)) (void)doom_movement_init(&movement, &playerApi);
         engine = doom_engine_create(); audio = doom_audio_create();
         if (!engine || !audio) return DLUMA_STATUS_UNAVAILABLE;
+#if defined(DOOM_MODE_RUNTIME)
+        worldDisplay = doom_world_display_create();
+#endif
 #if defined(DOOM_MODE_LAB)
-        const char *worldSprites = std::getenv("DOOMING_LIGHT_WORLD_SPRITES");
-        if (worldSprites && std::strcmp(worldSprites, "1") == 0)
-            worldDisplay = doom_world_display_create();
         const char *worldTrace = std::getenv("DOOMING_LIGHT_WORLD_TRACE");
         traceWorld=worldTrace && std::strcmp(worldTrace,"1")==0;
 #endif
@@ -1078,7 +1086,7 @@ struct Runtime {
         if (loading.valid()) loading.wait();
         rendering = {}; loading = {};
         assets.hud.reset(); assets.wad.reset();
-#if defined(DOOM_MODE_LAB)
+#if defined(DOOM_MODE_RUNTIME)
         doom_world_display_destroy(worldDisplay); worldDisplay = nullptr;
         worldDisplayWarned = false;
 #endif

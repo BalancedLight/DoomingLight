@@ -1,6 +1,6 @@
 #include "doom_interaction_state.h"
 
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
 #include <windows.h>
 
 extern "C" int doom_interaction_state(void *game_module, void *actor)

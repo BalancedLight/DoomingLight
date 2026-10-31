@@ -1,5 +1,5 @@
 #include "doom_hostility.h"
-#if defined(DOOM_LAB_HOSTILITY) && defined(_WIN32)
+#if defined(DOOM_MODE_RUNTIME) && defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif

@@ -5,9 +5,8 @@
 #include <cstdio>
 #include <cstring>
 
-/* This backend is intentionally only reachable in private lab builds. It
- * uses engine-owned materials and resources; it does not hook a renderer. */
-#ifdef DOOM_MODE_LAB
+/* Uses engine-owned materials and resources without hooking the renderer. */
+#ifdef DOOM_MODE_RUNTIME
 namespace {
 struct EngineString { const char *data; unsigned size, capacity; };
 using CreateDef = void *(__fastcall *)(void **);
@@ -29,7 +28,13 @@ struct Slot { void *emitter, *particle, *texture; unsigned char *pixels; unsigne
 struct Impl { unsigned char *base; void *level, *fx, *defs, *mats; Slot slots[64]; DoomWorldLights *lights; unsigned generation; bool quarantined, bilinear, light_attempted; };
 volatile LONG world_serial = 0;
 bool finite_position(const float *p) { return p && std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]); }
-void trace_failure(const char *message) { OutputDebugStringA(message); }
+void trace_failure(const char *message) {
+#ifdef DOOM_MODE_LAB
+    OutputDebugStringA(message);
+#else
+    (void)message;
+#endif
+}
 bool identities(Impl *r,void *level,uint32_t generation) {
     if(!r || r->quarantined || !level || level!=r->level || generation!=r->generation) return false;
     __try {

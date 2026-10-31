@@ -1,10 +1,13 @@
-Dooming Light development package
+Dooming Light 0.1.0-beta.1
 
-Requires DLUMA and an original Doom or Doom II IWAD from your own installation.
-Place the package in mods/native/global/doom.mode, then open Mods to configure it.
-Native enablement and disabling take effect after restarting Player.
+Requires DLUMA and an original Doom, Ultimate Doom or Doom II IWAD from your
+own installation. Extract this package to mods/native/global/doom.mode, enable
+and configure Dooming Light in Mods, then restart Player.
 
-The standard development build leaves normal gameplay in control while the
-new mode is being completed.
+This beta supports single-player Player maps on the compatible x64 Player
+build listed in the included source README. Keyboard and mouse combat are
+supported; controller combat and full Doom movement are still in development.
+Disable other combat or HUD replacements when using Dooming Light.
 
-The package contains no Doom game data. License and source details are included.
+To uninstall, disable the mod, restart Player, and remove the doom.mode folder.
+The package contains no Doom game data. Source and licenses are included.

@@ -5,7 +5,7 @@
 #include <cstring>
 #include <new>
 
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME)
 namespace {
 struct Vec3 { float x, y, z; };
 using Raytrace = unsigned char (__fastcall *)(void *, void *, const Vec3 *, Vec3 *, unsigned short, unsigned);

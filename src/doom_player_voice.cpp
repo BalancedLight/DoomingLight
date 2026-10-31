@@ -6,7 +6,7 @@
 #include <intrin.h>
 #include <new>
 
-#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+#if defined(DOOM_MODE_RUNTIME) || (defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG))
 namespace {
 constexpr uintptr_t GameGlobal = 0x1D07F88, GameVtable = 0x157D5F8;
 constexpr uintptr_t PlayerVtable = 0x17DD738, GetLocalPlayer = 0x3C2D90;
@@ -39,7 +39,39 @@ struct DoomPlayerVoice {
     bool published = false;
 };
 namespace {
-void observe(DoomPlayerVoice *filter, uint32_t kind, unsigned category, const void *caller) {
+struct NativeString { const char *data; unsigned size, capacity; };
+bool copy_cue(const void *name,char out[128]) {
+    out[0]=0;
+    if(!name) return false;
+    __try {
+        const auto *s=static_cast<const NativeString *>(name);
+        if(!s->data || !s->size || s->size>=128 || s->capacity<s->size) return false;
+        for(unsigned i=0;i<s->size;i++) {
+            unsigned char c=static_cast<unsigned char>(s->data[i]);
+            if(c<32 || c>126) {out[0]=0;return false;}
+            out[i]=static_cast<char>(c>='A'&&c<='Z'?c+('a'-'A'):c);
+        }
+        out[s->size]=0; return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {out[0]=0;return false;}
+}
+bool exertion_cue(const char *name) {
+    static const char *const prefixes[]={"playerm1_speech_edge_grab", "playerm1_speech_edge_grab_heavy",
+        "playerm1_speech_before_landing_damper", "playerm1_speech_reaction_landing_damper",
+        "playerm1_speech_reaction_landing_heavy_injuries"};
+    const char *base=name;
+    for(const char *p=name;*p;p++) if(*p=='/'||*p=='\\') base=p+1;
+    for(const char *prefix:prefixes) {
+        size_t n=std::strlen(prefix);
+        if(std::strncmp(base,prefix,n) || base[n]!='_') continue;
+        const char *suffix=base+n+1;
+        if(!suffix[0] || !suffix[1]) continue;
+        if(!((suffix[0]>='0'&&suffix[0]<='9'&&suffix[1]>='0'&&suffix[1]<='9') ||
+             (suffix[0]=='x'&&suffix[1]=='x'))) continue;
+        if(!suffix[2] || !std::strcmp(suffix+2,".wav")) return true;
+    }
+    return false;
+}
+void observe(DoomPlayerVoice *filter, uint32_t kind, unsigned category, const void *caller, const char *cue=nullptr) {
     if (!filter->trace || !TryAcquireSRWLockExclusive(&filter->observations_lock)) return;
     if (filter->observations_count < 64) {
         uintptr_t base=reinterpret_cast<uintptr_t>(filter->game);
@@ -47,6 +79,12 @@ void observe(DoomPlayerVoice *filter, uint32_t kind, unsigned category, const vo
         unsigned index=(filter->observations_head+filter->observations_count)%64;
         filter->observations[index]={kind,category,
             address>=base && address-base<0x2082000u ? static_cast<uint32_t>(address-base) : UINT32_MAX};
+        if(cue) {
+            size_t n=std::strlen(cue);
+            if(n>=sizeof(filter->observations[index].cue)) n=sizeof(filter->observations[index].cue)-1;
+            std::memcpy(filter->observations[index].cue,cue,n);
+            filter->observations[index].cue[n]=0;
+        }
         ++filter->observations_count;
     }
     ReleaseSRWLockExclusive(&filter->observations_lock);
@@ -68,9 +106,12 @@ bool is_local_view(DoomPlayerVoice *filter, void *view) {
         void *game = *reinterpret_cast<void **>(filter->game + GameGlobal);
         if (!game || *reinterpret_cast<void **>(game) != filter->game + GameVtable) return false;
         void *player = reinterpret_cast<GetPlayer>(filter->game + GetLocalPlayer)(game);
-        return player && *reinterpret_cast<void **>(player) == filter->game + PlayerVtable &&
-               field<void *>(view, 0x50) == player &&
-               player == reinterpret_cast<GetPlayer>(filter->game + GetLocalPlayer)(game);
+        if (!player || *reinterpret_cast<void **>(player) != filter->game + PlayerVtable) return false;
+        const bool actor_sound = view == static_cast<unsigned char *>(player) + 40 &&
+            field<void *>(player, 40) == filter->game + 0x17DE468;
+        return (actor_sound || view == player || field<void *>(view, 0x50) == player) &&
+               player == reinterpret_cast<GetPlayer>(filter->game + GetLocalPlayer)(game) &&
+               (!actor_sound || field<void *>(player, 40) == filter->game + 0x17DE468);
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 unsigned __fastcall play_hook(void *view, unsigned id, unsigned flags, unsigned char mode,
@@ -89,10 +130,14 @@ int __fastcall sound2d_hook(void *view, const void *name, unsigned char enabled,
                             float fade, unsigned category) {
     void *caller = _ReturnAddress();
     DoomPlayerVoice *filter = current.load(std::memory_order_acquire);
-    if (filter && filter->active.load(std::memory_order_acquire) &&
-        (filter->trace || caller == filter->game + JumpSoundReturn) && is_local_view(filter, view)) {
-        observe(filter,2,category,caller);
-        if (caller == filter->game + JumpSoundReturn) { queue_jump(filter); return 0; }
+    if (filter && filter->active.load(std::memory_order_acquire)) {
+        char cue[128]{};
+        bool has_cue=copy_cue(name,cue);
+        bool action=has_cue && exertion_cue(cue);
+        if ((filter->trace || action || caller == filter->game + JumpSoundReturn) && is_local_view(filter, view)) {
+            observe(filter,2,category,caller,has_cue?cue:nullptr);
+            if (action || caller == filter->game + JumpSoundReturn) { queue_jump(filter); return 0; }
+        }
     }
     return original2d(view, name, enabled, volume, pitch, distance, flags, fade, category);
 }
@@ -110,9 +155,11 @@ extern "C" DoomPlayerVoice *doom_player_voice_create(void *module) {
     if (!module || module != GetModuleHandleW(L"gamedll_x64_rwdi.dll")) return nullptr;
     auto *filter = new (std::nothrow) DoomPlayerVoice;
     if (filter) {
-        wchar_t value[4]{};
         filter->game = static_cast<unsigned char *>(module);
+#if defined(DOOM_MODE_LAB) && defined(_DEBUG) && !defined(NDEBUG)
+        wchar_t value[4]{};
         filter->trace = GetEnvironmentVariableW(L"DOOMING_LIGHT_VOICE_TRACE",value,4)==1 && value[0]==L'1';
+#endif
     }
     return filter;
 }

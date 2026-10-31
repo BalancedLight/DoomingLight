@@ -1,8 +1,18 @@
-# Dooming Light
+<p align="center">
+  <img
+    src="https://github.com/user-attachments/assets/40dd9126-4a99-4897-bc28-5aeda323c000"
+    alt="DOOM Logo"
+    width="1280"
+  />
+</p>
 
+<p align="center">
 Dooming Light brings Doom's weapons, status bar, sounds and music to Dying
 Light Player maps through DLUMA. Dying Light supplies the maps, enemies,
 objectives, and interactions.
+</p>
+
+<hr>
 
 ## Beta compatibility
 

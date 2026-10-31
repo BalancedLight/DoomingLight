@@ -31,8 +31,8 @@ replacement at the same time. A game update may require a new mod build.
 
 Keyboard and mouse combat are supported. Controller combat, Doom's ground
 movement, parts of death and respawn presentation, directional hurt faces, and
-some climbing sounds are still being developed. Both movement presets currently
-use Dying Light's movement; Classic disables jumping.
+some climbing sounds are still being developed. Movement uses Dying Light's
+normal parkour controls, including jumping, climbing and free look.
 
 ## Requirements and installation
 

@@ -213,7 +213,7 @@ struct Runtime {
         settings.music = text("music", "doom");
         settings.musicSynth = text("music_synth", "opl");
         settings.soundfont = text("soundfont", "");
-        settings.classic = text("movement", "traversal") == "classic";
+        settings.classic = false;
         settings.cheats = integer("cheats", 1, 0, 1) != 0;
         if (oldCheats!=settings.cheats) resetCheatInput=true;
         settings.track = integer("default_track", 0, 0, 49);

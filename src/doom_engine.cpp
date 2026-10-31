@@ -74,6 +74,20 @@ bool hash_file(HMODULE module, const char *expected) {
         ok = expected[2*i] == hex[digest[i] >> 4] && expected[2*i+1] == hex[digest[i] & 15];
     return ok;
 }
+bool executable_callback(void *address) {
+    MEMORY_BASIC_INFORMATION info{};
+    if (!address || VirtualQuery(address,&info,sizeof(info))!=sizeof(info) ||
+        info.State!=MEM_COMMIT || (info.Protect&(PAGE_GUARD|PAGE_NOACCESS))) return false;
+    const DWORD protection=info.Protect&0xffu;
+    return protection==PAGE_EXECUTE || protection==PAGE_EXECUTE_READ ||
+        protection==PAGE_EXECUTE_READWRITE || protection==PAGE_EXECUTE_WRITECOPY;
+}
+bool retain_callback(void *address) {
+    if (!executable_callback(address)) return false;
+    HMODULE owner=nullptr;
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(address),&owner)!=0;
+}
 struct Patch {
     void **slot = nullptr; void *original = nullptr; void *hook = nullptr;
     bool install(void **target, void *expected, void *replacement) {
@@ -807,7 +821,7 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
     static const unsigned char get_player_prefix[] =
         {0x48,0x8b,0x81,0x08,0x05,0x00,0x00,0x48,0x85,0xc0,0x74,0x18,0x48,0x8b,0x80,0xb8};
     e->player_static_ready = !std::memcmp(e->game+0x3C2D90,get_player_prefix,sizeof(get_player_prefix));
-    if (table[144] == e->game + 0x10C6D10 && table[146] == e->game + 0x10C7390)
+    if (executable_callback(table[144]) && executable_callback(table[146]))
         e->capabilities |= DOOM_ENGINE_INPUT;
     static const unsigned char setter_prefix[] =
         {0x48,0x89,0x5c,0x24,0x10,0x56,0x48,0x83,0xec,0x50,0x48,0x8b,0x01,0x0f,0x29,0x74};
@@ -898,8 +912,14 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
     if ((e->capabilities & DOOM_ENGINE_REQUIRED) != DOOM_ENGINE_REQUIRED) return 0;
 #endif
     auto table = reinterpret_cast<void **>(e->game + 0x18FFD78);
-    stock_keyboard = reinterpret_cast<Keyboard>(e->game + 0x10C6D10);
-    stock_mouse = reinterpret_cast<MouseButton>(e->game + 0x10C7390);
+    /* These virtual methods may already belong to another enabled mod.
+     * Preserve its callbacks as our next handlers and restore that same chain. */
+    void *previous_keyboard=table[144], *previous_mouse=table[146];
+    if (previous_keyboard==reinterpret_cast<void *>(&keyboard_hook) ||
+        previous_mouse==reinterpret_cast<void *>(&mouse_hook) ||
+        !retain_callback(previous_keyboard) || !retain_callback(previous_mouse)) return 0;
+    stock_keyboard = reinterpret_cast<Keyboard>(previous_keyboard);
+    stock_mouse = reinterpret_cast<MouseButton>(previous_mouse);
     stock_health = reinterpret_cast<HealthSetter>(e->game + 0xB1EED0);
     stock_jump = reinterpret_cast<MoveAction>(e->game + 0xCD92D0);
     stock_action = reinterpret_cast<PlayerAction>(e->game + 0xB090D0);

@@ -12,7 +12,6 @@
     {
       "id": "gameplay", "name": "Gameplay",
       "settings": [
-        {"key": "movement", "name": "Movement", "description": "Traversal keeps jumping, climbing and free look. Classic disables jumping.", "type": "enum", "default": "traversal", "options": [{"value": "traversal", "name": "Traversal"}, {"value": "classic", "name": "Classic"}]},
         {"key": "fire_key", "name": "Extra fire key", "description": "Hold this key to fire. Left mouse also fires.", "type": "keybind", "default": 162},
         {"key": "incoming_damage", "name": "Incoming damage (%)", "description": "Damage taken before Doom armor absorbs its share.", "type": "integer", "default": 100, "min": 10, "max": 500, "step": 10},
         {"key": "outgoing_damage", "name": "Weapon damage (%)", "description": "Damage dealt by Doom weapons.", "type": "integer", "default": 100, "min": 10, "max": 500, "step": 10},

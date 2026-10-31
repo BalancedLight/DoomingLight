@@ -218,7 +218,7 @@ def main() -> int:
         shutil.copyfile(module, destination / "DoomMode.dll")
         manifest = json.loads((destination / "mod.dluma.json").read_text(encoding="utf-8"))
         if args.lab:
-            manifest.update(id="doom.mode.lab", name="Dooming Light Lab", version="0.1.0-lab")
+            manifest.update(id="doom.mode.lab", version="0.1.0-lab")
             (destination / "mod.dluma.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         write_lock(destination)
         lock = validate_lock(destination)

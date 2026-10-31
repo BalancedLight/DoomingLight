@@ -119,7 +119,7 @@ struct DoomEngine {
     unsigned world_host_flags = 0;
     bool active = false, published = false;
     std::recursive_mutex mutex;
-    Patch keyboard, mouse, health, jump, interaction;
+    Patch keyboard, mouse, health, jump, interaction, level_destroy;
     std::array<bool,256> swallowed{}, forwarded{};
     bool fire = false, keyboard_fire = false, mouse_swallowed = false, mouse_forwarded = false;
     int fire_key = VK_LCONTROL;
@@ -214,6 +214,28 @@ MouseButton stock_mouse = nullptr;
 HealthSetter stock_health = nullptr;
 MoveAction stock_jump = nullptr;
 PlayerAction stock_action = nullptr;
+using LevelDestroy = uintptr_t (__fastcall *)(void *);
+LevelDestroy stock_level_destroy = nullptr;
+std::atomic<DoomEngine *> level_cleanup_owner{nullptr};
+static void *destroying_level(DoomEngine *e,void *receiver) {
+    __try {
+        if (!receiver || field<void *>(receiver,0)!=e->game+0x15822e8) return nullptr;
+        return e->get_level(receiver);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+uintptr_t __fastcall level_destroy_hook(void *receiver) {
+    DoomEngine *e=level_cleanup_owner.load(std::memory_order_acquire);
+    if (e) {
+        std::lock_guard<std::recursive_mutex> lock(e->mutex);
+        void *level=destroying_level(e,receiver);
+        if (level && e->world_renderer && level==e->world_renderer_level &&
+            doom_world_renderer_destroy(e->world_renderer,level,e->world_renderer_generation)) {
+            e->world_renderer=nullptr; e->world_renderer_level=nullptr;
+            e->world_renderer_generation=0;
+        }
+    }
+    return stock_level_destroy(receiver);
+}
 void __fastcall action_hook(void *input, int action, float value, unsigned char flags) {
     DoomEngine *e = current.load(std::memory_order_acquire);
     if (!e) { stock_action(input,action,value,flags); return; }
@@ -395,6 +417,9 @@ extern "C" DoomEngine *doom_engine_create(void) { return new (std::nothrow) Doom
 extern "C" void doom_engine_destroy(DoomEngine *engine) {
     if (!engine) return;
     doom_engine_deactivate(engine);
+    (void)engine->level_destroy.restore();
+    DoomEngine *cleanup_expected=engine;
+    level_cleanup_owner.compare_exchange_strong(cleanup_expected,nullptr);
     doom_player_voice_destroy(engine->player_voice);
     engine->player_voice=nullptr;
     doom_native_pickup_destroy(engine->native_pickup); engine->native_pickup=nullptr;
@@ -447,6 +472,36 @@ static void *current_player_level(DoomEngine *e) {
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) { level = nullptr; }
     return level;
+}
+/* Session ownership remains available during transitions where the local
+ * actor has already detached. Resolve the live level rather than dereferencing
+ * a cached level after the session has changed. */
+static void *current_session_level(DoomEngine *e) {
+    if (!e || !e->game || !e->get_level || !e->stock_profile || !e->in_update_scope()) return nullptr;
+    __try {
+        void *game = field<void *>(e->game,0x1d07f88);
+        if (!game || field<void *>(game,0)!=e->game+0x157d5f8) return nullptr;
+        void *session = field<void *>(game,0x508);
+        if (!session) return nullptr;
+        auto **table = *reinterpret_cast<void ***>(session);
+        if ((table != reinterpret_cast<void **>(e->game+0x1591fc8) &&
+             table != reinterpret_cast<void **>(e->game+0x158e488) &&
+             table != reinterpret_cast<void **>(e->game+0x158f838)) ||
+            table[244] != e->game+0x6ad140) return nullptr;
+        void *level_di = reinterpret_cast<GetPlayer>(table[244])(session);
+        if (!level_di || field<void *>(level_di,0)!=e->game+0x1581c98 ||
+            field<void *>(level_di,16)!=e->game+0x15822e8) return nullptr;
+        void *level = e->get_level(static_cast<unsigned char *>(level_di)+16);
+        if (!level || field<void *>(e->game,0x1d07f88)!=game ||
+            field<void *>(game,0x508)!=session ||
+            reinterpret_cast<GetPlayer>(table[244])(session)!=level_di ||
+            e->get_level(static_cast<unsigned char *>(level_di)+16)!=level) return nullptr;
+        return level;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+static void *current_owned_level(DoomEngine *e) {
+    void *level = current_player_level(e);
+    return level ? level : current_session_level(e);
 }
 static void *owned_controller(DoomEngine *e,void *actor,size_t offset,unsigned vtable_rva) {
     void *controller=field<void *>(actor,offset);
@@ -806,7 +861,7 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
         e->death_presentation_started=false;
     }
     if (e->world_renderer) {
-        void *old_level=current_player_level(e);
+        void *old_level=current_owned_level(e);
         if (!old_level || old_level!=e->world_renderer_level ||
             !doom_world_renderer_destroy(e->world_renderer,old_level,e->world_renderer_generation))
             return 0;
@@ -878,19 +933,29 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
     }
     if (!e->active) { doom_engine_deactivate(e); return 0; }
 #if defined(DOOM_MODE_RUNTIME)
+    /* Keep this observer through scope deactivation: OnDestroy precedes the
+     * native FX teardown even when the session/player has already detached. */
+    if (e->stock_profile && !e->level_destroy.slot) {
+        stock_level_destroy=reinterpret_cast<LevelDestroy>(e->game+0x3e9a20);
+        level_cleanup_owner.store(e,std::memory_order_release);
+        if (!e->level_destroy.install(reinterpret_cast<void **>(e->game+0x1582698),
+                reinterpret_cast<void *>(stock_level_destroy),reinterpret_cast<void *>(&level_destroy_hook))) {
+            doom_engine_deactivate(e); return 0;
+        }
+    }
     if (!doom_menu_guard_start(e->game,e->stock_profile ? 1 : 0))
-        OutputDebugStringA("Doom Mode Lab: player menu control unavailable\n");
+        OutputDebugStringA("Dooming Light: player menu control unavailable\n");
     e->noclip_started=doom_noclip_start(e->game,e->engine_module,e->level,e->generation,e->stock_profile)!=0;
     if (e->native_pickup) (void)doom_native_pickup_start(e->native_pickup);
     e->death_presentation_started=doom_death_presentation_start(e->game,e->engine_module)!=0;
     if (!e->death_presentation_started)
-        OutputDebugStringA("Doom Mode Lab: death camera unavailable\n");
+        OutputDebugStringA("Dooming Light: death camera unavailable\n");
     if (doom_viewmodel_start(e->game, GetModuleHandleW(L"engine_x64_rwdi.dll"))) e->viewmodel_pending=true;
-    else OutputDebugStringA("Doom Mode Lab: native weapon visibility unavailable\n");
+    else OutputDebugStringA("Dooming Light: native weapon visibility unavailable\n");
     e->fpp_body_started=doom_fpp_body_start(e->game,e->engine_module)!=0;
-    if (!e->fpp_body_started) OutputDebugStringA("Doom Mode Lab: player body visibility unavailable\n");
+    if (!e->fpp_body_started) OutputDebugStringA("Dooming Light: player body visibility unavailable\n");
     e->damage_direction=doom_damage_direction_start(e->game,e->engine_module,damage_view,e);
-    if (!e->damage_direction) OutputDebugStringA("Doom Mode Lab: damage direction unavailable\n");
+    if (!e->damage_direction) OutputDebugStringA("Dooming Light: damage direction unavailable\n");
     if (e->player_voice && e->voice_replacement && doom_player_voice_install(e->player_voice)) {
         e->voice_installed=true;
         doom_player_voice_set_active(e->player_voice,1);
@@ -898,11 +963,11 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
     if (e->presentation && doom_interaction_presentation_install(e->presentation)) {
         e->presentation_installed = true;
         doom_interaction_presentation_set_active(e->presentation, 1);
-    } else OutputDebugStringA("Doom Mode Lab: interaction look control unavailable\n");
+    } else OutputDebugStringA("Dooming Light: interaction look control unavailable\n");
     if (e->deaths && doom_deaths_start(e->deaths)) {
         e->deaths_started = true;
         doom_deaths_context(e->deaths, e->local_player(), e->level, e->generation);
-    } else OutputDebugStringA("Doom Mode Lab: enemy death observer unavailable\n");
+    } else OutputDebugStringA("Dooming Light: enemy death observer unavailable\n");
 #endif
     return 1;
 }
@@ -911,7 +976,7 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     void *cleanupLevel=nullptr;
     if (e->in_update_scope()) {
-        cleanupLevel=current_player_level(e);
+        cleanupLevel=current_owned_level(e);
         if (!cleanupLevel && doom_noclip_active()) cleanupLevel=e->level;
     }
     (void)doom_menu_guard_stop();
@@ -1297,7 +1362,7 @@ extern "C" int doom_engine_world_sprites_close(DoomEngine *e) {
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->world_renderer) return 1;
     if (!e->in_update_scope() || !e->world_renderer_level ||
-        current_player_level(e)!=e->world_renderer_level ||
+        current_owned_level(e)!=e->world_renderer_level ||
         !doom_world_renderer_destroy(e->world_renderer,e->world_renderer_level,
                                      e->world_renderer_generation)) return 0;
     e->world_renderer=nullptr; e->world_renderer_level=nullptr; e->world_renderer_generation=0;

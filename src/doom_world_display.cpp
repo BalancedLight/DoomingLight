@@ -133,7 +133,10 @@ static const Image *picture(DoomWorldDisplay *d, const DoomWad *wad, const Wante
 extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine,
                                           const DoomWad *wad, const DoomWorld *world,
                                           uint32_t generation) {
-    if (!d || !engine || !wad || !world || !generation || world->generation != generation || d->blocked) return 0;
+    if (!d || !engine || !wad || !world || !generation || world->generation != generation) return 0;
+    /* A failed close may be retried after the engine has released the old
+     * renderer. Do not reuse its sprite tokens in the new generation. */
+    if (d->blocked && !doom_world_display_close(d, engine)) return 0;
     const int bilinear = doom_engine_texture_filtering(engine) != 0;
     const int dynamic_lights = doom_engine_dynamic_lights(engine) != 0;
     if (d->open && (d->generation != generation || d->bilinear != bilinear || d->dynamic_lights != dynamic_lights)) {

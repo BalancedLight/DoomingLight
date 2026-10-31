@@ -160,6 +160,8 @@ struct Runtime {
     bool resetCheatInput = false;
     bool reloadAssets = false, musicPlaying = false, musicOverride = false, requestOverride = false;
     bool bindingWarning = false;
+    bool assetsReadyForActivation = false;
+    uint64_t retryActivationAt = 0;
 
     template<class T> bool service(const char* id, T& output) {
         output = {};
@@ -641,6 +643,7 @@ struct Runtime {
     }
 #endif
     void beginAssets() {
+        assetsReadyForActivation=false;
         if (loading.valid()) { reloadAssets = true; return; }
         const Settings selected = settings;
         loading = std::async(std::launch::async, [selected]() {
@@ -660,6 +663,7 @@ struct Runtime {
     }
     void deactivate() {
         active = false;
+        retryActivationAt=0;
         combatSuspended=false; handBusy=false; weaponReturning=false;
         deathSoundPlayed=false;
         nativePickupMessages.clear(); nextNativePickupMessage=0;
@@ -712,6 +716,11 @@ struct Runtime {
                 doom_wad_sound(assets.wad.get(),"DSPLDETH",&death);
             doom_sound_free(&pain); doom_sound_free(&jump); doom_sound_free(&death);
             doom_engine_set_voice_replacement(engine,painReady);
+            assetsReadyForActivation=true;
+        }
+        if (!active && assetsReadyForActivation) {
+            if (now()<retryActivationAt) return;
+            retryActivationAt=now()+250;
             if (!doom_engine_activate(engine, generation)) {
                 if (!bindingWarning) {
                     log("WARN", "Dooming Light is unavailable for this Player build.");
@@ -720,6 +729,7 @@ struct Runtime {
                 return;
             }
             active = true;
+            retryActivationAt=0;
             if (settings.music == "doom") requestMusic(defaultTrack());
         }
         if (!active) { (void)releaseMusicLease(); return; }

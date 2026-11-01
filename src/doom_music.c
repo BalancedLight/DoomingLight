@@ -65,6 +65,14 @@ size_t doom_music_parse_mus(const uint8_t *data, size_t size,
     return 0;
 }
 
+unsigned doom_music_setting_code(int doom2, unsigned track) {
+    if (doom2) return track >= 1u && track <= 35u ? track : 1u;
+    if (track >= 1u && track <= 9u) return track + 10u;
+    if (track == 10u) return 21u;
+    if (track >= 11u && track <= 45u && track % 10u != 0) return track;
+    return 11u;
+}
+
 int doom_music_lump_name(int doom2, unsigned code, char name[9]) {
     static const char *const commercial[] = {
       "RUNNIN", "STALKS", "COUNTD", "BETWEE", "DOOM", "THE_DA", "SHAWN",

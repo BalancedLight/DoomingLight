@@ -89,7 +89,7 @@ struct Settings {
     std::string game = "auto", doom, doom2, music = "doom", musicSynth = "opl", soundfont;
     std::string controllerFire = "right", controllerCycle = "normal";
     bool classic = false, cheats = true, hudFit = true, bilinear = false, dynamicLights = true;
-    int track = 0, hud = 100, weaponScale = 100, incoming = 100, outgoing = 100;
+    int track = 1, hud = 100, weaponScale = 100, incoming = 100, outgoing = 100;
     int musicVolume = 70, effectsVolume = 100;
 };
 
@@ -223,7 +223,7 @@ struct Runtime {
         settings.classic = false;
         settings.cheats = integer("cheats", 1, 0, 1) != 0;
         if (oldCheats!=settings.cheats) resetCheatInput=true;
-        settings.track = integer("default_track", 0, 0, 49);
+        settings.track = integer("default_track", 1, 1, 45);
         settings.hud = integer("hud_scale", 100, 50, 200);
         settings.hudFit = integer("hud_fit_screen", 1, 0, 1) != 0;
         settings.weaponScale = integer("weapon_scale", 100, 50, 200);
@@ -254,7 +254,7 @@ struct Runtime {
         }
     }
     unsigned defaultTrack() const {
-        return settings.track ? static_cast<unsigned>(settings.track) : player.doom2 ? 1u : 11u;
+        return doom_music_setting_code(player.doom2, static_cast<unsigned>(settings.track));
     }
     void cancel(uint64_t& token) {
         if (token && core.token_cancel) {
@@ -876,8 +876,6 @@ struct Runtime {
             lastSplashSequence=0; splashLogCount=0;
 #endif
             doom_engine_reset_damage(engine);
-            musicOverride = false;
-            if (settings.music == "doom") requestMusic(defaultTrack());
         }
         if (!frame.alive) player.health = 0;
         if (player.health>0) deathSoundPlayed=false;

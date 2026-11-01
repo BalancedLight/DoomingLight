@@ -81,8 +81,10 @@ sprite scale are separate. Doom graphics use point filtering by default;
 **Projectile lights** lets plasma and BFG shots illuminate nearby surfaces.
 
 Music settings choose Doom music, Dying Light music, or silence. Default track
-numbers match `IDMUS`: `11` for Doom's E1M1 and `01` for Doom II's MAP01.
-Zero selects the first track. Select **SoundFont (SF2)** and provide your own
+1 selects E1M1 in Doom or MAP01 in Doom II. Doom II uses track numbers 1â€“35;
+Doom also accepts its original `IDMUS` numbers 11â€“45, and settings 1â€“9 select
+E1M1â€“E1M9 while 10 selects E2M1. The `IDMUS` cheat uses the original game
+numbering. Select **SoundFont (SF2)** and provide your own
 SF2 file to use different instruments; Classic OPL is used if it cannot be
 loaded. Sound effects include `DSNOWAY`, Doom's failed-interaction sound.
 

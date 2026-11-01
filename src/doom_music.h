@@ -16,6 +16,8 @@ size_t doom_music_parse_midi(const uint8_t *data, size_t size,
                              DoomMusicEvent *out, size_t capacity);
 /* Resolve the original IDMUS two-digit code to a WAD lump name. */
 int doom_music_lump_name(int doom2, unsigned code, char name[9]);
+/* Map a one-based settings track number to the game's IDMUS code. */
+unsigned doom_music_setting_code(int doom2, unsigned track);
 #ifdef __cplusplus
 }
 #endif

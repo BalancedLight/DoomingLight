@@ -88,7 +88,7 @@ def validate_configuration(path: Path) -> None:
             raise PackageError(f"Configuration category {category_id} requires 1 to 9 settings")
         for setting in settings:
             setting = fields(setting, {"key", "name", "description", "type", "default"},
-                             {"min", "max", "step", "maxLength", "options"}, "setting")
+                             {"min", "max", "step", "maxLength", "options", "legacyDefault"}, "setting")
             key = identifier(setting["key"], "setting key")
             if key in setting_keys:
                 raise PackageError(f"Duplicate configuration setting: {key}")
@@ -103,12 +103,14 @@ def validate_configuration(path: Path) -> None:
                 if type(default) is not bool or extras:
                     raise PackageError(f"Invalid boolean setting: {key}")
             elif kind == "integer":
-                if extras != {"min", "max", "step"}:
+                if extras not in ({"min", "max", "step"}, {"min", "max", "step", "legacyDefault"}):
                     raise PackageError(f"Invalid integer setting: {key}")
                 minimum, maximum = integer(setting["min"], key), integer(setting["max"], key)
                 step, number = integer(setting["step"], key), integer(default, key)
                 if step <= 0 or minimum > maximum or not minimum <= number <= maximum or (maximum-minimum) % step or (number-minimum) % step:
                     raise PackageError(f"Invalid integer range or default: {key}")
+                if "legacyDefault" in setting and minimum <= integer(setting["legacyDefault"], key) <= maximum:
+                    raise PackageError(f"Invalid legacy default: {key}")
             elif kind == "keybind":
                 if not extras <= {"min", "max", "step"} or not 1 <= integer(default, key) <= 254:
                     raise PackageError(f"Invalid keybind setting: {key}")

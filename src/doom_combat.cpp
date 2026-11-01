@@ -2,6 +2,7 @@
 #include "doom_hostility.h"
 #include "doom_hit_geometry.h"
 #include "doom_hit_resolver.h"
+#include "doom_decals.h"
 #include <windows.h>
 #include <algorithm>
 #include <array>
@@ -66,6 +67,10 @@ struct DoomCombat {
     NativeFree native_free = nullptr;
     GetControlParent get_parent = nullptr;
     DoomHitResolver *hit_resolver = nullptr;
+    DoomDecals *decals = nullptr;
+    bool decals_allowed = false;
+    ULONGLONG decal_window = 0, decal_retry = 0;
+    unsigned decal_count = 0;
     void *world_player = nullptr, *world_level = nullptr;
     uint32_t world_generation = 0, world_epoch = 0;
     unsigned world_trace_budget = 0;
@@ -122,8 +127,12 @@ extern "C" DoomCombat *doom_combat_create(void *game_module, void *engine_module
 }
 extern "C" void doom_combat_destroy(DoomCombat *combat) {
     if (!combat) return;
+    doom_decals_close(combat->decals);
     doom_hit_resolver_destroy(combat->hit_resolver);
     delete combat;
+}
+extern "C" void doom_combat_enable_decals(DoomCombat *c, int supported_profile) {
+    if (c) c->decals_allowed=supported_profile!=0;
 }
 extern "C" const char *doom_combat_last_reason(const DoomCombat *combat) {
     return combat ? combat->last_reason : "combat_missing";
@@ -258,6 +267,21 @@ static int fire_hitscan(DoomCombat *c, void *player, void *level, void *camera,
     if (!valid(end)) { c->last_reason="impact_position_invalid"; return 0; }
     ActorHit actor_hit{};
     const bool found_actor=trace_actor(c,pos,end,&actor_hit)>0;
+    if (world_hit && !found_actor && c->decals_allowed &&
+        event->weapon!=DOOM_FIST && event->weapon!=DOOM_CHAINSAW &&
+        c->world_player==player && c->world_level==level && c->get_level(actor+40)==level) {
+        const ULONGLONG now=GetTickCount64();
+        if (now-c->decal_window>=1000) { c->decal_window=now; c->decal_count=0; }
+        if (c->decal_count<64) {
+            if (!c->decals && now>=c->decal_retry) {
+                c->decals=doom_decals_open(c->engine);
+                if (!c->decals) c->decal_retry=now+1000;
+            }
+            Vec3 normal{}; std::memcpy(&normal,collision.data(),sizeof(normal));
+            const float point[3]={end.x,end.y,end.z}, surface[3]={normal.x,normal.y,normal.z};
+            if (doom_decals_add(c->decals,level,point,surface)) ++c->decal_count;
+        }
+    }
     void *hit=nullptr; std::memcpy(&hit,collision.data()+24,sizeof(hit));
     std::memcpy(&mesh,collision.data()+32,sizeof(mesh));
     void *target=nullptr;
@@ -436,6 +460,10 @@ int sweep_segment(DoomCombat *c, DoomVec3 from, DoomVec3 to, float radius, DoomT
 }
 int world_sweep(void *ctx, DoomVec3 from, DoomVec3 to, float radius, DoomTrace *trace) {
     __try { return sweep_segment(static_cast<DoomCombat *>(ctx),from,to,radius,trace); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+int world_ground(void *ctx, DoomVec3 from, DoomVec3 to, DoomTrace *trace) {
+    __try { return trace_segment(static_cast<DoomCombat *>(ctx),from,to,trace,false); }
     __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 int world_aim(void *ctx, DoomVec3 origin, DoomVec3 direction, float range, DoomTrace *trace) {
@@ -630,6 +658,20 @@ int visible_target(DoomCombat *c, DoomVec3 from, uint64_t handle) {
         c->world_last_target=handle; c->world_last_point=center;
         c->world_last_direction=unit({center.x-start.x,center.y-start.y,center.z-start.z});
         c->world_last_mesh=-1;
+        /* The visibility ray ends inside the target and may not return its
+         * model element. Resolve the actual body part without changing which
+         * target receives splash damage. */
+        const float begin[3]={start.x,start.y,start.z};
+        const float end[3]={center.x,center.y,center.z};
+        DoomResolvedHit resolved{};
+        const int resolution=doom_hit_resolver_trace(c->hit_resolver,target,begin,end,&resolved);
+        c->world_last_resolution=resolution;
+        c->world_last_reason=c->hit_resolver ? static_cast<int>(resolved.reason) : -1;
+        if (resolution==DOOM_HIT_RESOLVED) {
+            c->world_last_mesh=resolved.mesh_element;
+            c->world_last_bone=static_cast<int>(resolved.bone);
+            c->world_last_point={resolved.point[0],resolved.point[1],resolved.point[2]};
+        }
         return 1;
     }
     return trace.target==handle ? 1 : 0;
@@ -712,6 +754,7 @@ extern "C" int doom_combat_world_bind(DoomCombat *c, void *player, void *level,
     if (!++c->world_epoch) ++c->world_epoch;
     std::memset(host,0,sizeof(*host));
     host->context=c; host->sweep=world_sweep; host->aim=world_aim; host->damage=world_damage;
+    host->ground=world_ground;
     if (c->find_objects && c->native_free && c->object_position && c->object_bounds) {
         host->nearby=world_nearby; host->visible=world_visible;
     }
@@ -719,6 +762,36 @@ extern "C" int doom_combat_world_bind(DoomCombat *c, void *player, void *level,
 }
 extern "C" void doom_combat_world_unbind(DoomCombat *c) {
     if (!c) return;
+    doom_decals_close(c->decals); c->decals=nullptr;
     c->world_player=nullptr; c->world_level=nullptr; c->world_last_target=0;
     c->actor_cache_valid=false; c->actor_cache_count=0;
+}
+extern "C" int doom_combat_player_bounds(DoomCombat *c, void *player, void *level,
+                                           DoomVec3 *center, float *radius, float *height) {
+    if (!c || !player || !level || !center || !radius || !height ||
+        c->world_player!=player || c->world_level!=level || !c->object_bounds || !c->get_level)
+        return 0;
+    __try {
+        auto *actor=static_cast<unsigned char *>(player);
+        if (c->get_level(actor+40)!=level) return 0;
+        const float *native=c->object_bounds(actor+24);
+        if (!native) return 0;
+        float bounds[6]; std::memcpy(bounds,native,sizeof(bounds));
+        for (float value : bounds) if (!std::isfinite(value)) return 0;
+        for (unsigned i=0;i<3;++i) if (bounds[i]>=bounds[i+3]) return 0;
+        const float scale=DOOM_WORLD_UNITS_PER_METRE;
+        const float w=(bounds[3]-bounds[0])*0.5f*scale;
+        const float d=(bounds[5]-bounds[2])*0.5f*scale;
+        const float h=(bounds[4]-bounds[1])*scale;
+        DoomVec3 midpoint{(bounds[0]+bounds[3])*0.5f*scale,
+                          (bounds[2]+bounds[5])*0.5f*scale,
+                          (bounds[1]+bounds[4])*0.5f*scale};
+        if (!std::isfinite(midpoint.x) || !std::isfinite(midpoint.y) || !std::isfinite(midpoint.z) ||
+            !std::isfinite(w) || !std::isfinite(d) || !std::isfinite(h) ||
+            w<=0.0f || d<=0.0f || h<=0.0f || w>65536.0f || d>65536.0f || h>65536.0f ||
+            c->world_player!=player || c->world_level!=level || c->get_level(actor+40)!=level)
+            return 0;
+        *center=midpoint; *radius=std::max(w,d); *height=h;
+        return 1;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }

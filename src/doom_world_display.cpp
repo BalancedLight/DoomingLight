@@ -75,7 +75,7 @@ Wanted desired(const DoomWorld *world, unsigned index, const DoomVec3 *viewer) {
             w.flags = DOOM_WORLD_SPRITE_FULLBRIGHT;
     } else {
         const DoomPickup &p = world->pickups[index - PickupOffset];
-        if (p.active) {
+        if (p.active && p.grounded) {
             w.name = doom_world_pickup_sprite(p.kind);
             if (p.kind == DOOM_DROP_GREEN_ARMOR && p.age % 13u >= 6u) {
                 w.name = "ARM1B0";
@@ -185,11 +185,14 @@ extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine
                        (slot.token && updates >= 4))) continue;
         const Image *p = change ? picture(d, wad, w) : nullptr;
         if (change && !p) continue;
+        /* The billboard vertices extend by the particle size in each direction.
+         * Keep the pickup anchored at half its visible height. */
+        const float sprite_scale = w.pickup ? 0.5f : 1.0f;
         if (w.pickup) w.position.z += static_cast<float>(change ? p->height : 0) * 0.5f;
         if (!slot.token) {
             ++creates;
             slot.token = doom_engine_world_sprite_add(engine, p->pixels, p->edge, w.position,
-                                                       static_cast<float>(p->edge) / 32.0f, w.flags);
+                                                       static_cast<float>(p->edge) / 32.0f * sprite_scale, w.flags);
             if (!slot.token) { d->blocked = true; return 0; }
             slot.edge = p->edge; slot.flags = w.flags; ++native_count;
         } else if (change) {

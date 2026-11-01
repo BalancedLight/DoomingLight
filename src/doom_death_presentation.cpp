@@ -18,6 +18,10 @@ struct State {
     volatile LONG calls; void *camera,*actor,*saved_camera,*saved_actor;
     uint32_t generation; volatile LONG active; int view_height; bool overridden;
     Vec3 saved_position,saved_forward,saved_up;
+    Vec3 displayed_position,displayed_forward,displayed_up;
+    Vec3 held_position,held_forward,held_up;
+    void *displayed_actor,*held_actor; uint32_t displayed_generation,held_generation;
+    bool displayed,held;
 };
 State state = {};
 bool valid(void *camera, void *actor) {
@@ -60,17 +64,24 @@ uintptr_t __fastcall update_hook(void *camera) {
         result=state.original(camera);
         if (InterlockedCompareExchange(&state.active,0,0) && !state.overridden && camera==state.camera && valid(camera,state.actor)) {
             Vec3 pos={},forward={},up={},actor_pos={};
+            const bool held=state.held && state.held_actor==state.actor && state.held_generation==state.generation;
             if (state.position(camera,&pos) && state.forward(camera,&forward) && state.up(camera,&up) &&
-                state.actor_position(static_cast<unsigned char *>(state.actor)+24,&actor_pos) &&
-                finite(pos) && finite(forward) && finite(up) && finite(actor_pos) &&
-                pos.y-actor_pos.y >= 0.1875f && pos.y-actor_pos.y <= 2.5f) {
+                finite(pos) && finite(forward) && finite(up) &&
+                (held || (state.actor_position(static_cast<unsigned char *>(state.actor)+24,&actor_pos) &&
+                          finite(actor_pos) && pos.y-actor_pos.y >= 0.1875f && pos.y-actor_pos.y <= 2.5f))) {
                 state.saved_camera=camera; state.saved_actor=state.actor;
                 state.saved_position=pos; state.saved_forward=forward; state.saved_up=up;
-                int height=state.view_height; if (height<6) height=6; if (height>41) height=41;
-                const float target_y=actor_pos.y+0.1875f;
-                pos.y -= (pos.y-target_y)*static_cast<float>(41-height)/35.0f;
                 Vec3 native_forward={-forward.x,-forward.y,-forward.z};
+                if (held) {
+                    pos=state.held_position; native_forward=state.held_forward; up=state.held_up;
+                } else {
+                    int height=state.view_height; if (height<6) height=6; if (height>41) height=41;
+                    const float target_y=actor_pos.y+0.1875f;
+                    pos.y -= (pos.y-target_y)*static_cast<float>(41-height)/35.0f;
+                }
                 state.transform(camera,native_forward,up,pos); state.overridden=true;
+                state.displayed_position=pos; state.displayed_forward=native_forward; state.displayed_up=up;
+                state.displayed_actor=state.actor; state.displayed_generation=state.generation; state.displayed=true;
             }
         }
     } __finally { LeaveCriticalSection(&state.lock); InterlockedDecrement(&state.calls); }
@@ -108,12 +119,25 @@ extern "C" void doom_death_presentation_set(void *camera, void *actor, uint32_t 
     if (!state.lock_ready) return;
     EnterCriticalSection(&state.lock);
     __try {
+        const bool reset_pose=!dead_wait || !generation || actor!=state.actor || generation!=state.generation;
         if ((!dead_wait || !generation || camera!=state.camera || actor!=state.actor || generation!=state.generation) && !restore()) {
             InterlockedExchange(&state.active,0); LeaveCriticalSection(&state.lock); return;
         }
+        if (reset_pose) { state.held=false; state.displayed=false; }
         InterlockedExchange(&state.active,dead_wait && camera && actor && generation); state.camera=camera; state.actor=actor;
         state.generation=generation; state.view_height=view_height;
     } __except(EXCEPTION_EXECUTE_HANDLER) { InterlockedExchange(&state.active,0); }
+    LeaveCriticalSection(&state.lock);
+}
+extern "C" void doom_death_presentation_commit(void) {
+    if (!state.lock_ready) return;
+    EnterCriticalSection(&state.lock);
+    if (state.displayed && state.displayed_actor==state.actor &&
+        state.displayed_generation==state.generation && InterlockedCompareExchange(&state.active,0,0)) {
+        state.held_position=state.displayed_position; state.held_forward=state.displayed_forward;
+        state.held_up=state.displayed_up; state.held_actor=state.actor;
+        state.held_generation=state.generation; state.held=true;
+    }
     LeaveCriticalSection(&state.lock);
 }
 extern "C" int doom_death_presentation_stop(void) {
@@ -122,7 +146,7 @@ extern "C" int doom_death_presentation_stop(void) {
     if (state.enabled) { if (MH_DisableHook(state.game+0x2bb220)!=MH_OK) return 0; state.enabled=false; }
     if (InterlockedCompareExchange(&state.calls,0,0)) return 0;
     EnterCriticalSection(&state.lock);
-    __try { if (!restore()) { LeaveCriticalSection(&state.lock); return 0; } state.camera=nullptr; state.actor=nullptr; state.generation=0; }
+    __try { if (!restore()) { LeaveCriticalSection(&state.lock); return 0; } state.camera=nullptr; state.actor=nullptr; state.generation=0; state.held=false; state.displayed=false; }
     __except(EXCEPTION_EXECUTE_HANDLER) { LeaveCriticalSection(&state.lock); return 0; }
     LeaveCriticalSection(&state.lock); return 1;
 }

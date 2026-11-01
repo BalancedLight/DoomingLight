@@ -1,0 +1,40 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Core gameplay checks
+        shell: cmd
+        run: |
+          call tools\check_core.bat || exit /b 1
+          call tools\check_world.bat || exit /b 1
+          call tools\check_movement.bat || exit /b 1
+          call tools\check_ground_motion.bat || exit /b 1
+      - name: Build and validate Release packages
+        shell: cmd
+        run: call build_doom_mode_msvc.bat Release
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: DoomingLight-${{ github.sha }}
+          path: dist/*.zip
+          if-no-files-found: error

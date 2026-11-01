@@ -212,5 +212,17 @@ int main(void)
     for (i = 0; i < 25; ++i)
         doom_tick(&player, 0, collect_event, 0);
     assert(player.view_height == 6);
+    doom_reset(&player, 1);
+    assert(!doom_damage_palette(&player));
+    assert(doom_damage(&player, 1) == 1 && doom_damage_palette(&player) == 2);
+    doom_tick(&player, 0, 0, 0);
+    assert(!doom_damage_palette(&player));
+    player.god = 1;
+    assert(!doom_damage(&player, 20) && !doom_damage_palette(&player));
+    player.god = 0; player.armor_type = 1; player.armor = 100;
+    assert(doom_damage(&player, 30) == 20 && player.damage_count == 20);
+    assert(doom_damage(&player, 500) > 0 && player.damage_count == 100 && doom_damage_palette(&player) == 8);
+    for (i = 0; i < 100; ++i) doom_tick(&player, 0, 0, 0);
+    assert(!doom_damage_palette(&player));
     return 0;
 }

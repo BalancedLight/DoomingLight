@@ -10,6 +10,7 @@
 #include "doom_deaths.h"
 #include "doom_combat.h"
 #include "doom_native_pickup.h"
+#include "doom_loot_adapter.h"
 #include "doom_noclip.h"
 #include "doom_player_voice.h"
 
@@ -63,6 +64,8 @@ int doom_engine_position(DoomEngine *engine, float *x, float *y, float *z);
 int doom_engine_camera_position(DoomEngine *engine, float *x, float *y, float *z);
 /* Both outputs use Doom coordinates; valid only during this game update. */
 int doom_engine_shot_basis(DoomEngine *engine, DoomVec3 *origin, DoomVec3 *direction);
+/* Current player's world AABB; requires an active bound game-update scope. */
+int doom_engine_player_bounds(DoomEngine *engine, DoomVec3 *center, float *radius, float *height);
 /* Lab candidate availability; individual host operations can still fail. */
 int doom_engine_lab_projectile_ready(DoomEngine *engine, DoomWeapon weapon);
 unsigned doom_engine_death_drain(DoomEngine *engine, DoomDeathRecord *out, unsigned capacity);
@@ -79,6 +82,7 @@ void doom_engine_set_voice_replacement(DoomEngine *engine, int ready);
 int doom_engine_request_noclip(DoomEngine *engine);
 void doom_engine_allow_native_pickups(DoomEngine *engine, int accepting);
 unsigned doom_engine_native_pickups(DoomEngine *engine, DoomNativePickupRecord *out, unsigned capacity);
+unsigned doom_engine_loot_drain(DoomEngine *engine, DoomLootRecord *out, unsigned capacity);
 int doom_engine_initialize(DoomEngine *engine);
 int doom_engine_activate(DoomEngine *engine, uint32_t map_generation);
 void doom_engine_deactivate(DoomEngine *engine);

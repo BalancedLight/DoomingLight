@@ -4,7 +4,9 @@
 extern "C" {
 #endif
 typedef struct DoomDamageDirection DoomDamageDirection;
+/* A successful view acquisition holds the caller's engine lock until release. */
 typedef int (*DoomDamageViewFn)(void *context, void **player, void **camera);
+typedef void (*DoomDamageViewReleaseFn)(void *context);
 typedef struct DoomDamageDirectionSnapshot {
     unsigned hook_calls, local_calls, side_reads, matched_reads;
     int last_reason, last_side;
@@ -16,7 +18,8 @@ enum DoomDamageDirectionReason {
     DOOM_DIRECTION_BAD_VECTORS, DOOM_DIRECTION_DEGENERATE,
     DOOM_DIRECTION_FRONT, DOOM_DIRECTION_LEFT, DOOM_DIRECTION_RIGHT, DOOM_DIRECTION_EXCEPTION
 };
-DoomDamageDirection *doom_damage_direction_start(void *game, void *engine, DoomDamageViewFn view, void *context);
+DoomDamageDirection *doom_damage_direction_start(void *game, void *engine, DoomDamageViewFn view,
+                                                DoomDamageViewReleaseFn release, void *context);
 int doom_damage_direction_side(const DoomDamageDirection *direction, const void *player);
 int doom_damage_direction_snapshot(const DoomDamageDirection *direction, DoomDamageDirectionSnapshot *snapshot);
 int doom_damage_direction_stop(DoomDamageDirection *direction);

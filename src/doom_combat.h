@@ -15,6 +15,7 @@ typedef struct DoomDamageObservation {
 } DoomDamageObservation;
 DoomCombat *doom_combat_create(void *game_module, void *engine_module);
 void doom_combat_destroy(DoomCombat *combat);
+void doom_combat_enable_decals(DoomCombat *combat, int supported_profile);
 /* Called on the Player game thread with freshly acquired objects. */
 int doom_combat_hitscan(DoomCombat *combat, void *player, void *level,
                         void *camera, const DoomEvent *event, float damage_scale);
@@ -29,6 +30,9 @@ unsigned doom_combat_drain_impacts(DoomCombat *combat, DoomHitscanImpact *out, u
 int doom_combat_world_bind(DoomCombat *combat, void *player, void *level,
                            uint32_t generation, float damage_scale, DoomWorldHost *host);
 void doom_combat_world_unbind(DoomCombat *combat);
+/* World AABB of the current bound player in Doom units. */
+int doom_combat_player_bounds(DoomCombat *combat, void *player, void *level,
+                              DoomVec3 *center, float *radius, float *height);
 #ifdef __cplusplus
 }
 #endif

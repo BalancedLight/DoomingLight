@@ -29,9 +29,9 @@ Other Player builds, the main campaign executable, multiplayer, Doom maps and
 PWAD modifications are outside this beta. Do not enable another combat or HUD
 replacement at the same time. A game update may require a new mod build.
 
-Keyboard and mouse combat are supported. Controller combat, Doom's ground
-movement, parts of death and respawn presentation, directional hurt faces, and
-some climbing sounds are still being developed. Movement uses Dying Light's
+Keyboard, mouse and XInput controller combat are supported. Doom's ground
+movement and parts of death, respawn and player-voice presentation are still
+being developed. Movement uses Dying Light's
 normal parkour controls, including jumping, climbing and free look.
 
 ## Requirements and installation
@@ -57,13 +57,23 @@ runtime log.
 Each map and respawn starts with 100 health, no armor, all available weapons,
 and full standard ammunition. Doom II adds the super shotgun. Doom inventory
 is separate from Dying Light's inventory. Supply drops appear after hostile
-kills; pickup text appears at the top left.
+kills; pickup text appears at the top left. Supported weapon, ammunition and medkit pickups
+convert into Doom supplies. Excess converted supplies remain as Doom pickups.
+Some native pickup paths and ordinary ground-item visuals are not yet replaced. Quest items,
+crafting materials, cash and unrecognized items retain their normal behavior.
+Some native container capacity checks still apply before conversion.
 
 Left mouse and the configurable extra fire key (Left Ctrl by default) fire.
 Weapon keys 1–7 select the classic slots; 1 cycles melee weapons and 3 cycles
 the shotgun and super shotgun when available. Native attacks and equipped
 throwables are disabled. Inventory, map, quest and skill-menu hotkeys are also
 disabled during Doom gameplay; Escape opens the pause menu and Mods settings.
+
+On a controller, right trigger fires and D-pad Left/Right select the previous
+and next weapon. X interacts; jump, parkour, flashlight and the other native
+movement controls retain their bindings. Mods settings can move fire to the
+left trigger or reverse weapon cycling. The first connected XInput controller
+is used.
 
 The status bar fits the screen width by default. Its scale and the weapon
 sprite scale are separate. Doom graphics use point filtering by default;

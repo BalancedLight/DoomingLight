@@ -206,6 +206,8 @@ def main() -> int:
         destination.mkdir(parents=True, exist_ok=True)
         for filename in ("mod.dluma.json", "config.dluma.json", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.md"):
             shutil.copyfile(source / filename, destination / filename)
+        config_path = destination / "config.dluma.json"
+        config_path.write_text(json.dumps(json.loads(config_path.read_text(encoding="utf-8")), indent=2) + "\n", encoding="utf-8")
         with zipfile.ZipFile(destination / "DoomMode.pak", "w", compression=zipfile.ZIP_STORED) as pack:
             info = zipfile.ZipInfo("data/menu/scr/DLUMA_ModHud.xui", date_time=(2000, 1, 1, 0, 0, 0))
             info.external_attr = 0o100644 << 16
@@ -227,7 +229,10 @@ def main() -> int:
         with zipfile.ZipFile(source_archive, "w", zipfile.ZIP_DEFLATED) as archive:
             for directory in ("src", "sdk", "tools", "third_party", "package", "assets"):
                 for item in sorted((ROOT / directory).rglob("*")):
-                    if item.is_file() and "__pycache__" not in item.parts:
+                    if (item.is_file() and "__pycache__" not in item.parts
+                            and (item.suffix.lower() in {".c", ".cpp", ".h", ".py", ".bat", ".json", ".md", ".txt", ".sha256", ".xui"}
+                                 or item.name in {"LICENSE", "NOTICE", "COPYING"})
+                            and item.name not in {".dlw-workshop.json", ".dlw-workshopignore"}):
                         archive.write(item, item.relative_to(ROOT))
             for name in ("LICENSE", "LICENSE.DLUMA", "THIRD_PARTY_NOTICES.md", "README.md", "build_doom_mode_msvc.bat"):
                 archive.write(ROOT / name, name)
@@ -236,6 +241,22 @@ def main() -> int:
         write_lock(destination)
         lock = validate_lock(destination)
         package = create_package(destination, output / f"DoomingLight-{version}.zip")
+        if not args.lab:
+            content = output / "workshop" / "content"
+            workshop_mod = content / MOD_RELATIVE
+            workshop_mod.mkdir(parents=True, exist_ok=True)
+            if not workshop_mod.resolve().is_relative_to(output.resolve()):
+                raise PackageError("Workshop content leaves the output directory")
+            for item in destination.iterdir():
+                if item.is_file():
+                    shutil.copyfile(item, workshop_mod / item.name)
+            validate_lock(workshop_mod)
+            workshop_zip = output / f"DoomingLight-{version}-Workshop.zip"
+            with zipfile.ZipFile(workshop_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+                for item in sorted(workshop_mod.rglob("*")):
+                    if item.is_file():
+                        archive.write(item, item.relative_to(content))
+            print(f"Workshop upload content ready: {content}")
         print(json.dumps({"module": report, "artifacts": len(lock["artifacts"]), "package": package}, indent=2))
         return 0
     except (OSError, ValueError, struct.error, PackageError) as error:

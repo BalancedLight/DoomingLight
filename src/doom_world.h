@@ -50,6 +50,16 @@ extern "C"
         int (*visible)(void *, DoomVec3 from, uint64_t target);
         /* Return 1 only when damage was applied; 0 denotes unsupported/stale. */
         int (*damage)(void *, uint64_t target, int amount, DoomWeapon weapon);
+        /* Geometry ray without the combat actor-box approximation. */
+        int (*ground)(void *, DoomVec3 from, DoomVec3 to, DoomTrace *);
+        void *self_context;
+        /* Process local-player splash with host line of sight and damage ownership.
+           Return 1 for a completed check, including a blocked or invulnerable player. */
+        int (*self_splash)(void *, DoomVec3 origin, int amount);
+        int self_push;
+        DoomVec3 self_center;
+        float self_radius;
+        int self_bounds_valid;
     } DoomWorldHost;
     typedef enum DoomProjectileState
     {
@@ -71,6 +81,7 @@ extern "C"
         DoomDrop kind;
         DoomVec3 position;
         unsigned age;
+        int grounded;
     } DoomPickup;
     typedef struct DoomBfgHitFx
     {
@@ -145,6 +156,7 @@ extern "C"
     int doom_world_fire(DoomWorld *world, DoomWeapon weapon, DoomVec3 origin, DoomVec3 direction);
     int doom_world_enemy_killed(DoomWorld *world, DoomPlayer *player, uint64_t death_id,
                                 DoomVec3 position);
+    int doom_world_spawn_pickup(DoomWorld *world, DoomDrop kind, DoomVec3 position);
     /* One simulation step is one Doom tic. A failed collision query removes that
        projectile; it must never pass through geometry on an unknown result. */
     void doom_world_tick(DoomWorld *world, DoomPlayer *player, DoomVec3 player_position,

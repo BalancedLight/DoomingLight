@@ -10,6 +10,7 @@ static inline int doom_menu_guard_blocks_action(unsigned int id)
 {
     switch (id) {
     case 8: case 70: case 122: case 131: case 253: /* Player menus */
+    case 60: case 63: /* Primary and secondary quick-selection HUD */
     case 18:  /* Weapon throw */
     case 35:  /* Ground pound */
     case 68:  /* Attack */

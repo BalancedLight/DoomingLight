@@ -14,6 +14,12 @@ __pycache__/
 *.log
 *.dmp
 .vs/
+.codex-notes/
+.dlw-workshop.json
+.dlw-workshopignore
+**/.dlw-workshop.json
+**/.dlw-workshopignore
+AGENTS.md
 
 
 #Ignore vscode AI rules

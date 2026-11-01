@@ -4,7 +4,25 @@
 #include <assert.h>
 #include <string.h>
 static int damage_calls, damage_total, fail_sweep, aim_calls, pickup_calls, sprite_calls;
-static int pickup_amount;
+static int pickup_amount, ground_calls;
+static int self_calls, self_amount, self_blocked;
+static int self_splash(void *context, DoomVec3 origin, int amount)
+{
+    (void)origin;
+    ++self_calls; self_amount = amount;
+    if (!self_blocked) doom_damage((DoomPlayer *)context, amount);
+    return 1;
+}
+static int ground(void *context, DoomVec3 from, DoomVec3 to, DoomTrace *out)
+{
+    (void)context;
+    assert(from.z > to.z);
+    ++ground_calls;
+    out->hit = 1;
+    out->point = from;
+    out->point.z = 8.0f;
+    return 1;
+}
 static void pickup(void *context, DoomDrop kind, int amount)
 { (void)context; (void)kind; ++pickup_calls; pickup_amount = amount; }
 static int sprite(void *context, DoomSpriteKind kind, const char *lump, DoomVec3 position)
@@ -167,5 +185,53 @@ int main(void)
     assert(player.ammo[DOOM_ROCKETS] == 50);
     assert(runtime.flags & DOOM_WORLD_RUNTIME_UNSUPPORTED_PROJECTILE);
     assert(runtime.world.errors & DOOM_WORLD_ERROR_HOST_QUERY);
+    doom_world_reset(&world, 12);
+    doom_reset(&player, 1);
+    host.ground = ground;
+    for (i = 0; i < 7; ++i)
+        assert(doom_world_enemy_killed(&world, &player, i + 1, drop));
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(ground_calls == 4);
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(ground_calls == 7);
+    for (i = 0; i < 7; ++i)
+        assert(world.pickups[i].grounded && world.pickups[i].position.z == 8.25f);
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(ground_calls == 7);
+    host.self_context = &player;
+    host.self_splash = self_splash;
+    host.ground = 0;
+    fail_sweep = 0;
+    doom_world_reset(&world, 13);
+    doom_reset(&player, 1);
+    player.armor = 100; player.armor_type = 1;
+    assert(doom_world_fire(&world, DOOM_ROCKET, start, dir));
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(self_calls == 1 && self_amount == 124 && player.health == 17 && player.armor == 59);
+    doom_world_reset(&world, 14);
+    doom_reset(&player, 1); player.god = 1;
+    assert(doom_world_fire(&world, DOOM_ROCKET, start, dir));
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(self_calls == 2 && player.health == 100);
+    doom_world_reset(&world, 15);
+    doom_reset(&player, 1); self_blocked = 1;
+    assert(doom_world_fire(&world, DOOM_ROCKET, start, dir));
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(self_calls == 3 && player.health == 100);
+    doom_world_reset(&world, 16);
+    assert(doom_world_fire(&world, DOOM_ROCKET, start, dir));
+    { DoomVec3 far = {300, 0, 0}; doom_world_tick(&world, &player, far, 56, &host); }
+    assert(self_calls == 3);
+    doom_world_reset(&world, 17);
+    doom_reset(&player, 1);
+    assert(doom_world_spawn_pickup(&world, DOOM_DROP_BULLETS, start));
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(world.pickups[0].active && player.ammo[DOOM_BULLETS] == 200);
+    player.ammo[DOOM_BULLETS] -= 10;
+    doom_world_tick(&world, &player, start, 56, &host);
+    assert(!world.pickups[0].active && player.ammo[DOOM_BULLETS] == 200);
+    for (i = 0; i < DOOM_WORLD_MAX_PICKUPS; ++i)
+        assert(doom_world_spawn_pickup(&world, DOOM_DROP_BULLETS, drop));
+    assert(!doom_world_spawn_pickup(&world, DOOM_DROP_BULLETS, drop));
     return 0;
 }

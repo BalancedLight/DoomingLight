@@ -38,6 +38,7 @@ using Unregister = unsigned char (__fastcall *)(void *, int);
 using Lookup = int (__fastcall *)(void *, const TtlString *);
 using IsVisible = unsigned char (__fastcall *)(void *);
 using SetVisible = void (__fastcall *)(void *, unsigned char);
+using SetColor = void (__fastcall *)(void *, float, float, float, float);
 using GetOwner = void *(__fastcall *)(void *);
 using GetScreenId = int (__fastcall *)(void *);
 using GetScriptName = const TtlString *(__fastcall *)(void *);
@@ -111,6 +112,7 @@ struct DoomHudHost {
     Screen find_screen; FindElement find_element; GetOwner get_owner;
     GetScreenId get_screen_id; GetScriptName get_script_name; void *root;
     Lookup lookup; IsVisible is_visible; SetVisible set_visible;
+    SetColor set_color;
     void *stock_root; void *stock_elements[8]; bool stock_owned[8];
     void *death_root, *death_elements[5]; bool death_owned[5];
     DoomHudHost *layers[2]; unsigned layer_kind; bool split_layers, inside_layered_update;
@@ -404,6 +406,8 @@ extern "C" DoomHudHost *doom_hud_host_create(void *level, void *image, uint32_t 
     h->width = reinterpret_cast<SetSize>(GetProcAddress(engine, "?SetSizeX@IUIElement@@QEAAXM@Z"));
     h->height = reinterpret_cast<SetSize>(GetProcAddress(engine, "?SetSizeY@IUIElement@@QEAAXM@Z"));
     h->set_visible = reinterpret_cast<SetVisible>(GetProcAddress(engine, "?SetVisible@IUIElement@@QEAAX_N@Z"));
+    if (identity(engine, engine_hash))
+        h->set_color = reinterpret_cast<SetColor>(GetProcAddress(engine, "?SetColor@IUIElementView@@QEAAXMMMM@Z"));
     if (!h->load_ui || !h->unload_ui || !h->loaded || !h->set_texture || !h->position || !h->width || !h->height || !h->set_visible) { free(h); return nullptr; }
     return h;
 }
@@ -594,4 +598,25 @@ extern "C" void doom_hud_host_hide(DoomHudHost *h, void *level, uint32_t generat
 extern "C" void doom_hud_host_death_screen(DoomHudHost *h, void *level, uint32_t generation, int suppress) {
     if (!h || !h->owns_screen || level!=h->level || generation!=h->generation) return;
     __try { death_visibility(h, suppress!=0); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+}
+extern "C" void doom_hud_host_damage_tint(DoomHudHost *h, void *level, uint32_t generation, float opacity) {
+    if (!h || !h->owns_screen || level!=h->level || generation!=h->generation ||
+        !h->set_color || !std::isfinite(opacity)) return;
+    __try {
+        if (!refresh_screen(h)) return;
+        TtlString id=str("I_DLUMADamageTint");
+        void *image=h->find_element(h->root,&id,1);
+        void *owner=h->get_owner(h->root);
+        if (!image || !owner || h->get_owner(image)!=owner) return;
+        const bool visible=opacity>0 && h->shown;
+        if (visible) {
+            if (opacity>1) opacity=1;
+            Vec3 origin{0,0,0};
+            h->position(image,&origin);
+            h->width(image,static_cast<float>(h->client_width));
+            h->height(image,static_cast<float>(h->client_height));
+            h->set_color(image,1.0f,0.0f,0.0f,opacity);
+        }
+        h->set_visible(image,visible ? 1 : 0);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }

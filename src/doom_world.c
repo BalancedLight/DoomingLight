@@ -113,6 +113,13 @@ int doom_world_enemy_killed(DoomWorld *world, DoomPlayer *player, uint64_t death
             return 0;
     world->killed[world->killed_next++ % 128] = death_id;
     kind = doom_enemy_killed(player);
+    return doom_world_spawn_pickup(world, kind, position);
+}
+int doom_world_spawn_pickup(DoomWorld *world, DoomDrop kind, DoomVec3 position)
+{
+    unsigned i;
+    if (!world || !valid_vec(position) || kind < DOOM_DROP_BULLETS || kind > DOOM_DROP_GREEN_ARMOR)
+        return 0;
     for (i = 0; i < DOOM_WORLD_MAX_PICKUPS; i++)
         if (!world->pickups[i].active)
         {
@@ -120,6 +127,7 @@ int doom_world_enemy_killed(DoomWorld *world, DoomPlayer *player, uint64_t death
             world->pickups[i].kind = kind;
             world->pickups[i].position = position;
             world->pickups[i].age = 0;
+            world->pickups[i].grounded = 0;
             return 1;
         }
     return 0;
@@ -357,8 +365,22 @@ static void tick_projectile(DoomWorld *world, DoomProjectile *p, DoomPlayer *pla
         if (!direct_result)
             world->errors |= DOOM_WORLD_ERROR_HOST_DAMAGE;
     }
-    if (p->weapon == DOOM_ROCKET)
+    if (p->weapon == DOOM_ROCKET) {
         rocket_splash(world, p->position, host, trace.target, direct_damage, direct_result);
+        if (host->self_splash) {
+            DoomVec3 center = host->self_bounds_valid ? host->self_center : aim_origin;
+            float player_radius = host->self_bounds_valid ? host->self_radius : 16.0f;
+            float distance;
+            if (!valid_vec(center) || !isfinite(player_radius) || player_radius<=0 || player_radius>65536.0f) {
+                center=aim_origin; player_radius=16.0f;
+            }
+            distance = fmaxf(fabsf(center.x - p->position.x),
+                             fabsf(center.y - p->position.y)) - player_radius;
+            if (distance < 0) distance = 0;
+            if (distance < 128.0f && !host->self_splash(host->self_context, p->position, 128 - (int)distance))
+                world->errors |= DOOM_WORLD_ERROR_HOST_DAMAGE;
+        }
+    }
 }
 void doom_world_tick_with_pickups(DoomWorld *world, DoomPlayer *player, DoomVec3 position, float height,
                                   const DoomWorldHost *host, DoomPickupFn pickup, void *context)
@@ -366,6 +388,31 @@ void doom_world_tick_with_pickups(DoomWorld *world, DoomPlayer *player, DoomVec3
     unsigned i;
     if (!world || !player || !host || !valid_vec(position) || !isfinite(height) || height <= 0)
         return;
+    /* Resolve new drops before projectile queries consume this tick's trace
+       budget. Keep the work bounded even after a large group of deaths. */
+    {
+        unsigned budget = 4;
+        for (i = 0; i < DOOM_WORLD_MAX_PICKUPS && budget; ++i) {
+            DoomPickup *p = &world->pickups[i];
+            DoomTrace floor = {0};
+            DoomVec3 from, to;
+            int queried;
+            if (!p->active || p->grounded) continue;
+            if (!host->ground) { p->grounded = 1; continue; }
+            --budget;
+            from = to = p->position;
+            from.z += 16.0f;
+            to.z -= 512.0f;
+            queried = host->ground(host->context, from, to, &floor);
+            if (!queried) {
+                if (p->age >= 35u) p->grounded = 1;
+                continue;
+            }
+            if (floor.hit && valid_vec(floor.point) && floor.point.z <= from.z && floor.point.z >= to.z)
+                p->position.z = floor.point.z + 0.25f;
+            p->grounded = 1;
+        }
+    }
     for (i=0;i<DOOM_WORLD_MAX_BFG_HIT_FX;i++)
         if (world->bfg_hit_fx[i].active && ++world->bfg_hit_fx[i].age>=32)
             world->bfg_hit_fx[i].active=0;

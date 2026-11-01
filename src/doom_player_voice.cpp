@@ -54,22 +54,34 @@ bool copy_cue(const void *name,char out[128]) {
         out[s->size]=0; return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {out[0]=0;return false;}
 }
-bool exertion_cue(const char *name) {
-    static const char *const prefixes[]={"playerm1_speech_edge_grab", "playerm1_speech_edge_grab_heavy",
+enum class VoiceCue { Other, Exertion, DamageOrDeath };
+VoiceCue player_voice_cue(const char *name) {
+    static const char *const exertion[]={"playerm1_jump", "playerm1_speech_falling_down",
+        "playerm1_speech_edge_grab", "playerm1_speech_edge_grab_heavy",
         "playerm1_speech_before_landing_damper", "playerm1_speech_reaction_landing_damper",
-        "playerm1_speech_reaction_landing_heavy_injuries"};
+        "playerm1_speech_reaction_landing_heavy_injuries", "playerm1_speech_knockdown_down",
+        "playerm1_speech_knockdown_land", "playerm1_speech_knockdown_stand_up"};
+    static const char *const damage[]={"playerm1_speech_highhealthhitreaction",
+        "playerm1_speech_mediumhealthhitreaction", "playerm1_speech_lowhealthhitreaction",
+        "playerm1_speech_reaction_damage", "playerm1_speech_reaction_fire",
+        "playerm1_speech_death", "playerm1_speech_death_underwater"};
     const char *base=name;
     for(const char *p=name;*p;p++) if(*p=='/'||*p=='\\') base=p+1;
-    for(const char *prefix:prefixes) {
-        size_t n=std::strlen(prefix);
-        if(std::strncmp(base,prefix,n) || base[n]!='_') continue;
-        const char *suffix=base+n+1;
-        if(!suffix[0] || !suffix[1]) continue;
-        if(!((suffix[0]>='0'&&suffix[0]<='9'&&suffix[1]>='0'&&suffix[1]<='9') ||
-             (suffix[0]=='x'&&suffix[1]=='x'))) continue;
-        if(!suffix[2] || !std::strcmp(suffix+2,".wav")) return true;
+    for (unsigned group=0; group<2; ++group) {
+        const char *const *prefixes=group ? damage : exertion;
+        const size_t count=group ? sizeof(damage)/sizeof(damage[0]) : sizeof(exertion)/sizeof(exertion[0]);
+        for (size_t i=0; i<count; ++i) {
+            size_t n=std::strlen(prefixes[i]);
+            if(std::strncmp(base,prefixes[i],n) || base[n]!='_') continue;
+            const char *suffix=base+n+1;
+            if(!suffix[0] || !suffix[1]) continue;
+            if(!((suffix[0]>='0'&&suffix[0]<='9'&&suffix[1]>='0'&&suffix[1]<='9') ||
+                 (suffix[0]=='x'&&suffix[1]=='x'))) continue;
+            if(!suffix[2] || !std::strcmp(suffix+2,".wav"))
+                return group ? VoiceCue::DamageOrDeath : VoiceCue::Exertion;
+        }
     }
-    return false;
+    return VoiceCue::Other;
 }
 void observe(DoomPlayerVoice *filter, uint32_t kind, unsigned category, const void *caller, const char *cue=nullptr) {
     if (!filter->trace || !TryAcquireSRWLockExclusive(&filter->observations_lock)) return;
@@ -133,10 +145,11 @@ int __fastcall sound2d_hook(void *view, const void *name, unsigned char enabled,
     if (filter && filter->active.load(std::memory_order_acquire)) {
         char cue[128]{};
         bool has_cue=copy_cue(name,cue);
-        bool action=has_cue && exertion_cue(cue);
-        if ((filter->trace || action || caller == filter->game + JumpSoundReturn) && is_local_view(filter, view)) {
+        const VoiceCue action=has_cue ? player_voice_cue(cue) : VoiceCue::Other;
+        if ((filter->trace || action!=VoiceCue::Other || caller == filter->game + JumpSoundReturn) && is_local_view(filter, view)) {
             observe(filter,2,category,caller,has_cue?cue:nullptr);
-            if (action || caller == filter->game + JumpSoundReturn) { queue_jump(filter); return 0; }
+            if (action==VoiceCue::Exertion || caller == filter->game + JumpSoundReturn) { queue_jump(filter); return 0; }
+            if (action==VoiceCue::DamageOrDeath) return 0;
         }
     }
     return original2d(view, name, enabled, volume, pitch, distance, flags, fade, category);

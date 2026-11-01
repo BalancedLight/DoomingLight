@@ -93,6 +93,7 @@ extern "C"
             refire;
         unsigned face_tics, face_random, shot_fired, invulnerability_tics, switch_phase,
             plasma_recovery, flash_tics, saw_idle_tics, face_attack_tics;
+        unsigned damage_count;
         int face, face_index, weapon_frame, weapon_y, view_height, flash_weapon, flash_frame;
         char cheat[16];
         unsigned cheat_len;
@@ -110,6 +111,7 @@ extern "C"
                       void *context);
     int doom_damage(DoomPlayer *player, int damage);
     int doom_damage_from(DoomPlayer *player, int damage, int attacker_side);
+    unsigned doom_damage_palette(const DoomPlayer *player);
     /* True if candidate is a case-insensitive prefix of a supported cheat,
      * including up to two IDMUS digits. Caller owns timeout and buffering. */
     int doom_cheat_is_prefix(const char *candidate, unsigned length);

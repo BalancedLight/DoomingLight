@@ -257,6 +257,7 @@ static void fire_weapon(DoomPlayer *p, DoomEventFn emit, void *ctx)
 
 static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)
 {
+    if (p->damage_count) --p->damage_count;
     if (p->health <= 0)
     {
         p->face = 2;
@@ -488,6 +489,9 @@ int doom_damage_from(DoomPlayer *p, int damage, int attacker_side)
         p->armor -= saved;
     }
     damage -= saved;
+    if (damage >= 100 || p->damage_count >= 100u - (unsigned)damage)
+        p->damage_count = 100;
+    else p->damage_count += (unsigned)damage;
     p->health -= damage;
     if (p->health < 0)
         p->health = 0;
@@ -503,6 +507,14 @@ int doom_damage_from(DoomPlayer *p, int damage, int attacker_side)
 int doom_damage(DoomPlayer *p, int damage)
 {
     return doom_damage_from(p, damage, 0);
+}
+unsigned doom_damage_palette(const DoomPlayer *p)
+{
+    unsigned count;
+    if (!p || !p->damage_count) return 0;
+    count = (p->damage_count + 7u) >> 3;
+    if (count > 7u) count = 7u;
+    return count + 1u;
 }
 static const char cheat_god[] = "IDDQD";
 static const char cheat_ammo[] = "IDFA";

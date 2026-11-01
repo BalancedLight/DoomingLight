@@ -3,6 +3,7 @@
 #include "doom_audio.h"
 #include "doom_core.h"
 #include "doom_engine.h"
+#include "doom_gamepad.h"
 #include "doom_hud.h"
 #include "doom_music.h"
 #include "doom_movement.h"
@@ -86,6 +87,7 @@ struct PreparedMusic {
 };
 struct Settings {
     std::string game = "auto", doom, doom2, music = "doom", musicSynth = "opl", soundfont;
+    std::string controllerFire = "right", controllerCycle = "normal";
     bool classic = false, cheats = true, hudFit = true, bilinear = false, dynamicLights = true;
     int track = 0, hud = 100, weaponScale = 100, incoming = 100, outgoing = 100;
     int musicVolume = 70, effectsVolume = 100;
@@ -103,6 +105,7 @@ struct Runtime {
     DoomPlayer player{};
     DoomEngine* engine = nullptr;
     DoomAudio* audio = nullptr;
+    DoomGamepad* gamepad = nullptr;
     Assets assets;
     std::future<Assets> loading;
     std::future<PreparedMusic> rendering;
@@ -207,12 +210,16 @@ struct Runtime {
     void configuration() {
         const std::string oldMusic = settings.music;
         const std::string oldSynth = settings.musicSynth, oldFont = settings.soundfont;
+        const std::string oldControllerFire=settings.controllerFire;
         const bool oldCheats = settings.cheats;
         settings.game = text("game", "auto");
         settings.doom = text("doom_wad", ""); settings.doom2 = text("doom2_wad", "");
         settings.music = text("music", "doom");
         settings.musicSynth = text("music_synth", "opl");
         settings.soundfont = text("soundfont", "");
+        settings.controllerFire = text("controller_fire", "right");
+        settings.controllerCycle = text("controller_cycle", "normal");
+        if(oldControllerFire!=settings.controllerFire) doom_gamepad_reset(gamepad);
         settings.classic = false;
         settings.cheats = integer("cheats", 1, 0, 1) != 0;
         if (oldCheats!=settings.cheats) resetCheatInput=true;
@@ -470,8 +477,12 @@ struct Runtime {
             !doom_engine_shot_basis(engine, &eye, &forward)) return false;
         DoomTrace aim{}, clearance{};
         if (!frame.host->aim(frame.host->context, eye, forward, 2048.0f, &aim)) return false;
-        DoomVec3 muzzle{frame.player_position.x, frame.player_position.y,
-                        frame.player_position.z + 32.0f};
+        // Keep the visible launch near the view while retaining the eye ray's aim.
+        // Scale offsets with the current player height instead of a fixed world offset.
+        const float forwardOffset=std::clamp(frame.player_height*0.14f,2.0f,24.0f);
+        const float downOffset=std::clamp(frame.player_height*0.10f,1.0f,16.0f);
+        DoomVec3 muzzle{eye.x+forward.x*forwardOffset, eye.y+forward.y*forwardOffset,
+                        eye.z+forward.z*forwardOffset-downOffset};
         if (!frame.host->sweep(frame.host->context, eye, muzzle, 0.0f, &clearance)) return false;
         if (clearance.hit) {
             // Keep the spawn on the camera side of an intervening wall.
@@ -663,6 +674,7 @@ struct Runtime {
     }
     void deactivate() {
         active = false;
+        doom_gamepad_reset(gamepad);
         retryActivationAt=0;
         combatSuspended=false; handBusy=false; weaponReturning=false;
         deathSoundPlayed=false;
@@ -723,7 +735,7 @@ struct Runtime {
             retryActivationAt=now()+250;
             if (!doom_engine_activate(engine, generation)) {
                 if (!bindingWarning) {
-                    log("WARN", "Dooming Light is unavailable for this Player build.");
+                    log("INFO", "Dooming Light is waiting for the player and game services; activation will be retried.");
                     bindingWarning = true;
                 }
                 return;
@@ -765,6 +777,7 @@ struct Runtime {
             (void)doom_messages_post(&pickupFeedback.messages,message,DOOM_MESSAGE_IMPORTANT,4000);
         }
         if (frame.noclip) {
+            (void)doom_gamepad_sample(gamepad,0,settings.controllerFire=="left",0);
             combatSuspended=true;
             doom_cancel_attack(&player); stopWeaponSound(); resetMotion();
             handBusy=false; weaponReturning=false;
@@ -845,7 +858,10 @@ struct Runtime {
         lastDamageSequence=frame.damage_sequence;
         if (!frame.paused && frame.jump_sounds && player.health>0 && !sound("DSOOF"))
             doom_engine_set_voice_replacement(engine,0);
-        if (frame.paused) { stopWeaponSound(); resetMotion(); lastTick = 0; return; }
+        if (frame.paused) {
+            (void)doom_gamepad_sample(gamepad,0,settings.controllerFire=="left",0);
+            stopWeaponSound(); resetMotion(); lastTick = 0; return;
+        }
         if (frame.respawn) {
             stopWeaponSound();
             resetMotion();
@@ -884,9 +900,27 @@ struct Runtime {
             vehicle.player_present,vehicle.vehicle_present && vehicle.is_local_driver,vehicleType,vehicle.speed_mps);
         combatSuspended=doom_vehicle_feedback_blocks_weapons(&vehicleFeedback) ||
             frame.parkour==2 || frame.interaction_active || handBusy;
+        const bool controllerEligible=frame.alive && player.health>0 && !frame.doom_dead &&
+            !frame.death_commit && !combatSuspended;
+        const DoomGamepadState controller=doom_gamepad_sample(gamepad,controllerEligible,
+            settings.controllerFire=="left",settings.controllerCycle=="reversed");
+        if(controllerEligible) frame.fire=frame.fire || controller.fire;
         if (combatSuspended) { doom_cancel_attack(&player); stopWeaponSound(); }
         if (player.health > 0 && !frame.doom_dead) {
             if (!combatSuspended) {
+                if(controller.cycle) {
+                    static const DoomWeapon order[]={DOOM_FIST,DOOM_CHAINSAW,DOOM_PISTOL,DOOM_SHOTGUN,
+                        DOOM_SUPER_SHOTGUN,DOOM_CHAINGUN,DOOM_ROCKET,DOOM_PLASMA,DOOM_BFG};
+                    const int current=player.pending_weapon>=0 ? player.pending_weapon : player.weapon;
+                    int index=0;
+                    for(int i=0;i<DOOM_WEAPON_COUNT;i++) if(order[i]==current) {index=i;break;}
+                    for(int i=0;i<DOOM_WEAPON_COUNT;i++) {
+                        index=(index+controller.cycle+DOOM_WEAPON_COUNT)%DOOM_WEAPON_COUNT;
+                        DoomPlayer probe=player; probe.pending_weapon=-1;
+                        doom_select_weapon(&probe,order[index]);
+                        if(probe.pending_weapon==order[index]) {doom_select_weapon(&player,order[index]);break;}
+                    }
+                }
                 if (frame.weapon_select >= 0 && frame.weapon_select < DOOM_WEAPON_COUNT)
                     doom_select_weapon(&player, static_cast<DoomWeapon>(frame.weapon_select));
                 if (frame.weapon_slot >= 1 && frame.weapon_slot <= 7)
@@ -922,6 +956,32 @@ struct Runtime {
 #endif
         doom_pickup_feedback_begin_frame(&pickupFeedback, frameElapsed);
         pickupSoundQueued = false;
+#if defined(DOOM_MODE_RUNTIME)
+        DoomLootRecord convertedLoot[DOOM_WORLD_MAX_PICKUPS]{};
+        unsigned lootCapacity=0;
+        for (const auto &pickup : world.world.pickups) if (!pickup.active) ++lootCapacity;
+        float lootX=0,lootY=0,lootZ=0;
+        if (player.health<=0 || !doom_engine_position(engine,&lootX,&lootY,&lootZ)) lootCapacity=0;
+        const DoomVec3 lootPosition{lootX*32.0f,lootZ*32.0f,lootY*32.0f};
+        const unsigned convertedCount=doom_engine_loot_drain(engine,convertedLoot,lootCapacity);
+        for (unsigned i=0;i<convertedCount;++i) {
+            if (convertedLoot[i].generation!=generation || player.health<=0) continue;
+            DoomDrop drop=DOOM_DROP_MEDIKIT;
+            if (convertedLoot[i].kind==DOOM_LOOT_AMMO) {
+                int best=0;
+                for (int a=1;a<4;++a)
+                    if (player.ammo[a]*player.max_ammo[best]<player.ammo[best]*player.max_ammo[a]) best=a;
+                drop=static_cast<DoomDrop>(best);
+            } else if (convertedLoot[i].kind!=DOOM_LOOT_HEALTH) continue;
+            const int before=drop<=DOOM_DROP_CELLS ? player.ammo[static_cast<int>(drop)] : player.health;
+            if (doom_collect(&player,drop)) {
+                const int after=drop<=DOOM_DROP_CELLS ? player.ammo[static_cast<int>(drop)] : player.health;
+                onPickup(this,drop,after-before);
+            } else {
+                (void)doom_world_spawn_pickup(&world.world,drop,lootPosition);
+            }
+        }
+#endif
         DoomNativePickupRecord nativePickups[16]{};
         const unsigned nativeCapacity=nativePickupMessages.size()<32
             ? static_cast<unsigned>(std::min<size_t>(16,32-nativePickupMessages.size())) : 0;
@@ -940,12 +1000,26 @@ struct Runtime {
             DoomWorldFrame worldFrame{};
             worldFrame.fire = player.health > 0 && !frame.doom_dead && !combatSuspended && frame.fire;
             const bool hostBound = doom_engine_world_bind(engine, &host) != 0;
+            host.self_push=vehicleStatus==DLUMA_STATUS_OK && vehicle.player_present && !vehicle.vehicle_present &&
+                frame.parkour==0 && !combatSuspended;
             float x = 0, y = 0, z = 0;
             if (hostBound && doom_engine_position(engine, &x, &y, &z)) {
                 worldFrame.host = &host;
                 worldFrame.world_active = 1;
                 worldFrame.player_position = {x * 32.0f, z * 32.0f, y * 32.0f};
                 worldFrame.player_height = 56.0f;
+                DoomVec3 boundsCenter{}; float boundsRadius=0, boundsHeight=0;
+                if (doom_engine_player_bounds(engine,&boundsCenter,&boundsRadius,&boundsHeight)) {
+                    worldFrame.player_height=boundsHeight;
+                } else {
+                    DoomVec3 currentEye{}, currentForward{};
+                    if (doom_engine_shot_basis(engine, &currentEye, &currentForward)) {
+                        const float eyeHeight=currentEye.z-worldFrame.player_position.z;
+                        // Reject camera transitions before estimating fallback height.
+                        if (std::isfinite(eyeHeight) && eyeHeight>=8.0f && eyeHeight<=160.0f)
+                            worldFrame.player_height=std::clamp(eyeHeight/0.90f,16.0f,192.0f);
+                    }
+                }
                 DoomDeathRecord deaths[16]{};
                 const unsigned count = doom_engine_death_drain(engine, deaths, 16);
                 for (unsigned i = 0; i < count && i < 16; ++i)
@@ -1068,7 +1142,7 @@ struct Runtime {
             !service(DLUMA_SERVICE_CONFIGURATION_V1, config)) return DLUMA_STATUS_UNAVAILABLE;
         (void)service(DLUMA_SERVICE_AUDIO_V1, media);
         if (service(DLUMA_SERVICE_PLAYER_V1, playerApi)) (void)doom_movement_init(&movement, &playerApi);
-        engine = doom_engine_create(); audio = doom_audio_create();
+        engine = doom_engine_create(); audio = doom_audio_create(); gamepad=doom_gamepad_create();
         if (!engine || !audio) return DLUMA_STATUS_UNAVAILABLE;
 #if defined(DOOM_MODE_RUNTIME)
         worldDisplay = doom_world_display_create();
@@ -1098,6 +1172,7 @@ struct Runtime {
         cancel(updateToken); cancel(configToken);
         if (rendering.valid()) rendering.wait();
         if (loading.valid()) loading.wait();
+        doom_gamepad_destroy(gamepad); gamepad=nullptr;
         rendering = {}; loading = {};
         assets.hud.reset(); assets.wad.reset();
 #if defined(DOOM_MODE_RUNTIME)

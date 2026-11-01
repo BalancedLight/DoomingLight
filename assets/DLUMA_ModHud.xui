@@ -43,5 +43,17 @@
                 <Show>false</Show>
             </Properties>
         </IUIAARectangle>
+        <IUIAARectangle>
+            <Properties>
+                <Id>I_DLUMADamageTint</Id>
+                <Width>1280.000000</Width>
+                <Height>720.000000</Height>
+                <Position>0.000000,0.000000,0.000000</Position>
+                <ImagePath>white</ImagePath>
+                <UseVertexColor>true</UseVertexColor>
+                <ClassOverride>IUIImage</ClassOverride>
+                <Show>false</Show>
+            </Properties>
+        </IUIAARectangle>
     </XuiScene>
 </XuiCanvas>

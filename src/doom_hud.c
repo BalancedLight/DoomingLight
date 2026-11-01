@@ -6,6 +6,7 @@
 #include <string.h>
 
 typedef struct HudPatch { char name[9]; DoomImage image; int valid; } HudPatch;
+typedef struct HudPaletteEntry { uint32_t key; uint8_t rgb[3], used; } HudPaletteEntry;
 struct DoomHud {
     const DoomWad *wad;
     HudPatch patches[256];
@@ -16,6 +17,7 @@ struct DoomHud {
     float hand_progress;
     unsigned hand_hold_ms;
     int hand_side, hand_pickup;
+    HudPaletteEntry invulnerability[512];
 };
 
 void doom_hud_bob_reset(DoomHud *hud)
@@ -99,8 +101,60 @@ DoomHud *doom_hud_create(const DoomWad *wad)
     DoomHud *hud;
     if (!wad) return NULL;
     hud = (DoomHud *)calloc(1, sizeof(*hud));
-    if (hud) hud->wad = wad;
+    if (hud) {
+        DoomLump palette, colormap;
+        unsigned i;
+        hud->wad = wad;
+        if (doom_wad_lump(wad,"PLAYPAL",&palette) && palette.size>=256u*3u &&
+            doom_wad_lump(wad,"COLORMAP",&colormap) && colormap.size>=33u*256u) {
+            for (i=0;i<256;++i) {
+                const uint8_t *color=palette.data+i*3u;
+                const uint8_t *mapped=palette.data+colormap.data[32u*256u+i]*3u;
+                uint32_t key=((uint32_t)color[0]<<16)|((uint32_t)color[1]<<8)|color[2];
+                unsigned slot=(key^(key>>9)^(key>>17))&511u;
+                while(hud->invulnerability[slot].used && hud->invulnerability[slot].key!=key)
+                    slot=(slot+1)&511u;
+                hud->invulnerability[slot].used=1; hud->invulnerability[slot].key=key;
+                memcpy(hud->invulnerability[slot].rgb,mapped,3);
+            }
+        }
+    }
     return hud;
+}
+
+void doom_hud_powerup_visuals(const DoomHud *hud, const DoomPlayer *player,
+                              uint8_t *rgba, size_t size)
+{
+    unsigned x,y;
+    unsigned invisibility;
+    int fuzz, inverse;
+    if (!hud || !player || !rgba || size<320u*200u*4u) return;
+    invisibility=player->power_tics[DOOM_POWER_INVISIBILITY];
+    fuzz=invisibility>128u || (invisibility&8u)!=0;
+    inverse=player->invulnerability_tics>128u || (player->invulnerability_tics&8u)!=0;
+    if (!fuzz && !inverse) return;
+    for (y=0;y<200;++y) for(x=0;x<320;++x) {
+        uint8_t *p=rgba+((size_t)y*320u+x)*4u;
+        if (!p[3]) continue;
+        if (fuzz) {
+            /* A screen-space darkening mask reveals the world through the
+             * silhouette. Noise advances at gameplay tic rate, not render FPS. */
+            uint32_t noise=player->face_random*0x9e3779b9u+x*374761393u+y*668265263u;
+            noise^=noise>>13;
+            p[0]=p[1]=p[2]=0;
+            p[3]=(noise&3u) ? (uint8_t)(64u+((noise>>8)&31u)) : 0;
+        } else {
+            uint32_t key=((uint32_t)p[0]<<16)|((uint32_t)p[1]<<8)|p[2];
+            unsigned slot=(key^(key>>9)^(key>>17))&511u;
+            while(hud->invulnerability[slot].used && hud->invulnerability[slot].key!=key)
+                slot=(slot+1)&511u;
+            if (hud->invulnerability[slot].used) memcpy(p,hud->invulnerability[slot].rgb,3);
+            else {
+                uint8_t gray=(uint8_t)(255u-((unsigned)p[0]*77u+(unsigned)p[1]*150u+(unsigned)p[2]*29u)/256u);
+                p[0]=p[1]=p[2]=gray;
+            }
+        }
+    }
 }
 void doom_hud_destroy(DoomHud *hud)
 {

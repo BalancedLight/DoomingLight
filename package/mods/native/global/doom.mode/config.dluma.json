@@ -27,7 +27,7 @@
         {"key": "hud_scale", "name": "Status bar scale (%)", "description": "Size of the status bar when Fit status bar to screen is off.", "type": "integer", "default": 100, "min": 50, "max": 200, "step": 10},
         {"key": "weapon_scale", "name": "Weapon sprite scale (%)", "description": "Size of Doom weapon sprites.", "type": "integer", "default": 100, "min": 50, "max": 200, "step": 10},
         {"key": "bilinear_filtering", "name": "Bilinear Doom textures", "description": "Smooth Doom's HUD, weapons, effects and pickups. Applies immediately.", "type": "boolean", "default": false},
-        {"key": "dynamic_lights", "name": "Projectile lights", "description": "Plasma and BFG shots light nearby surfaces. Applies immediately.", "type": "boolean", "default": true}
+        {"key": "dynamic_lights", "name": "Projectile lights", "description": "Plasma and BFG shots light nearby surfaces; rocket explosions briefly flash. Applies immediately.", "type": "boolean", "default": true}
       ]
     },
     {
@@ -36,7 +36,7 @@
         {"key": "music", "name": "Music", "description": "Doom music and Off stop Dying Light's music manager while the mode is active.", "type": "enum", "default": "doom", "options": [{"value": "doom", "name": "Doom music"}, {"value": "host", "name": "Dying Light music"}, {"value": "off", "name": "Off"}]},
         {"key": "music_synth", "name": "Music synthesizer", "description": "Choose the instruments used for Doom music. Applies immediately.", "type": "enum", "default": "opl", "options": [{"value": "opl", "name": "Classic OPL"}, {"value": "soundfont", "name": "SoundFont (SF2)"}]},
         {"key": "soundfont", "name": "SoundFont file", "description": "Path to an SF2 file for SoundFont music. Applies immediately.", "type": "text", "default": "", "maxLength": 1024},
-        {"key": "default_track", "name": "Default track", "description": "Applies on the next map. Doom II uses 1â€“35; Doom uses 1â€“10 or IDMUS numbers 11â€“45.", "type": "integer", "default": 1, "legacyDefault": 0, "min": 1, "max": 45, "step": 1},
+        {"key": "default_track", "name": "Default track", "description": "Applies on the next map. Doom II uses 1–35; Doom uses 1–10 or IDMUS numbers 11–45.", "type": "integer", "default": 1, "legacyDefault": 0, "min": 1, "max": 45, "step": 1},
         {"key": "music_volume", "name": "Music volume (%)", "description": "Volume of the Doom soundtrack.", "type": "integer", "default": 70, "min": 0, "max": 100, "step": 5},
         {"key": "effects_volume", "name": "Sound volume (%)", "description": "Volume of Doom weapons, pickups and the failed-interaction sound.", "type": "integer", "default": 100, "min": 0, "max": 100, "step": 5}
       ]

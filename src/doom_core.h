@@ -44,8 +44,18 @@ extern "C"
         DOOM_CHEAT_AMMO = 2,
         DOOM_CHEAT_CHOPPERS = 3,
         DOOM_CHEAT_AMMO_KEYS = 4,
-        DOOM_CHEAT_NOCLIP = 5
+        DOOM_CHEAT_NOCLIP = 5,
+        DOOM_CHEAT_BEHOLD_MENU = 6,
+        DOOM_CHEAT_BEHOLD_POWER = 7
     } DoomCheatId;
+    typedef enum DoomPower {
+        DOOM_POWER_INVULNERABILITY, DOOM_POWER_BERSERK,
+        DOOM_POWER_INVISIBILITY, DOOM_POWER_RADIATION_SUIT,
+        DOOM_POWER_AUTOMAP, DOOM_POWER_LIGHT_AMP, DOOM_POWER_COUNT
+    } DoomPower;
+    typedef enum DoomEnvironmentDamageKind {
+        DOOM_ENVIRONMENT_OTHER, DOOM_ENVIRONMENT_ACID, DOOM_ENVIRONMENT_FIRE
+    } DoomEnvironmentDamageKind;
     typedef enum DoomSoundId
     {
         DOOM_SOUND_PISTOL,
@@ -69,7 +79,10 @@ extern "C"
         DOOM_DROP_ROCKETS,
         DOOM_DROP_CELLS,
         DOOM_DROP_MEDIKIT,
-        DOOM_DROP_GREEN_ARMOR
+        DOOM_DROP_GREEN_ARMOR,
+        DOOM_DROP_INVULNERABILITY, DOOM_DROP_BERSERK, DOOM_DROP_INVISIBILITY,
+        DOOM_DROP_RADIATION_SUIT, DOOM_DROP_AUTOMAP, DOOM_DROP_LIGHT_AMP,
+        DOOM_DROP_COUNT
     } DoomDrop;
     typedef struct DoomEvent
     {
@@ -94,6 +107,7 @@ extern "C"
         unsigned face_tics, face_random, shot_fired, invulnerability_tics, switch_phase,
             plasma_recovery, flash_tics, saw_idle_tics, face_attack_tics;
         unsigned damage_count;
+        unsigned power_tics[DOOM_POWER_COUNT];
         int face, face_index, weapon_frame, weapon_y, view_height, flash_weapon, flash_frame;
         char cheat[16];
         unsigned cheat_len;
@@ -111,6 +125,9 @@ extern "C"
                       void *context);
     int doom_damage(DoomPlayer *player, int damage);
     int doom_damage_from(DoomPlayer *player, int damage, int attacker_side);
+    int doom_power_active(const DoomPlayer *player, DoomPower power);
+    int doom_power_give(DoomPlayer *player, DoomPower power);
+    int doom_environment_protected(const DoomPlayer *player, DoomEnvironmentDamageKind kind);
     unsigned doom_damage_palette(const DoomPlayer *player);
     /* True if candidate is a case-insensitive prefix of a supported cheat,
      * including up to two IDMUS digits. Caller owns timeout and buffering. */

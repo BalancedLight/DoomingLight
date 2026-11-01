@@ -111,14 +111,14 @@ struct DoomHudHost {
     int draw_x, draw_y, draw_width, draw_height;
     Screen find_screen; FindElement find_element; GetOwner get_owner;
     GetScreenId get_screen_id; GetScriptName get_script_name; void *root;
-    Lookup lookup; IsVisible is_visible; SetVisible set_visible;
+    Lookup lookup; IsVisible is_visible, is_actually_visible; SetVisible set_visible;
     SetColor set_color;
-    void *stock_root; void *stock_elements[8]; bool stock_owned[8];
+    void *stock_root; void *stock_elements[7]; bool stock_owned[7];
     void *death_root, *death_elements[5]; bool death_owned[5];
     DoomHudHost *layers[2]; unsigned layer_kind; bool split_layers, inside_layered_update;
     float status_scale, weapon_x, weapon_y;
 };
-static const char *const stock_ids[8] = {"HudHealthIndicator", "HudStamina", "HudRadar", "HudPrimaryWeaponIndicator", "HudSecondaryWeaponIndicator", "HudWeaponSelection", "HudCrosshair", "HudReloadNotify"};
+static const char *const stock_ids[7] = {"HudHealthIndicator", "HudStamina", "HudRadar", "HudPrimaryWeaponIndicator", "HudSecondaryWeaponIndicator", "HudWeaponSelection", "HudReloadNotify"};
 static void *find_stock_root(DoomHudHost *h) {
     TtlString hud = str("HUD.xui"); int id = h->lookup(h->level, &hud);
     if (id < 0) return nullptr;
@@ -140,7 +140,7 @@ static void stock_visibility(DoomHudHost *h, bool suppress) {
         h->stock_root = root;
     }
     if (!root) return;
-    for (unsigned i = 0; i < 8; ++i) {
+    for (unsigned i = 0; i < 7; ++i) {
         TtlString id = str(stock_ids[i]); void *element = h->find_element(root, &id, 1);
         if (element != h->stock_elements[i]) { h->stock_elements[i] = element; h->stock_owned[i] = false; }
         if (!element) continue;
@@ -151,6 +151,26 @@ static void stock_visibility(DoomHudHost *h, bool suppress) {
             h->stock_owned[i] = false;
         }
     }
+}
+static void mirror_crosshair_dot(DoomHudHost *h) {
+    if (!h || !h->root || !h->is_actually_visible || !h->find_element ||
+        h->client_width<=0 || h->client_height<=0) return;
+    TtlString image_id=str("I_DLUMADot");
+    void *image=h->find_element(h->root,&image_id,1);
+    void *owner=h->get_owner(h->root);
+    if (!image || !owner || h->get_owner(image)!=owner) return;
+    void *stock=find_stock_root(h);
+    TtlString crosshair_id=str("HudCrosshair"), dot_id=str("G_Dot");
+    void *crosshair=stock ? h->find_element(stock,&crosshair_id,1) : nullptr;
+    void *dot=crosshair ? h->find_element(crosshair,&dot_id,1) : nullptr;
+    const bool visible=h->shown && dot && h->is_actually_visible(dot);
+    if (visible) {
+        const float size=12.0f*static_cast<float>(h->client_height)/720.0f;
+        Vec3 position{(static_cast<float>(h->client_width)-size)*0.5f,
+                      (static_cast<float>(h->client_height)-size)*0.5f,0.0f};
+        h->width(image,size); h->height(image,size); h->position(image,&position);
+    }
+    h->set_visible(image,visible ? 1 : 0);
 }
 static void death_visibility(DoomHudHost *h, bool suppress) {
     static const char *const ids[5] = {"T_Dead", "T_RespawnInfo", "T_DeathPenalty", "T_Hint", "I_HintImage"};
@@ -351,6 +371,7 @@ extern "C" DoomHudHost *doom_hud_host_open(void *level, uint32_t generation) {
     auto get_script = reinterpret_cast<GetScriptName>(GetProcAddress(engine, "?GetScriptName@IUIScreen@@QEAAAEBV?$string_base@D@ttl@@XZ"));
     auto lookup = reinterpret_cast<Lookup>(GetProcAddress(engine, "?GetUIScreenIdByScriptName@ILevel@@QEAAHAEBV?$string_base@D@ttl@@@Z"));
     auto is_visible = reinterpret_cast<IsVisible>(GetProcAddress(engine, "?IsVisible@IUIElement@@QEBA_NXZ"));
+    auto is_actually_visible = reinterpret_cast<IsVisible>(GetProcAddress(engine, "?IsActuallyVisible@IUIElement@@QEBA_NXZ"));
     auto set_visible = reinterpret_cast<SetVisible>(GetProcAddress(engine, "?SetVisible@IUIElement@@QEAAX_N@Z"));
     if (!reg || !load || !find_screen || !find_element || !show || !hide || !unregister || !get_owner || !get_id || !get_script || !lookup || !is_visible || !set_visible) { hud_trace("Doom HUD: screen exports unavailable\n"); return nullptr; }
     int screen_id = -1; void *image = nullptr; DoomHudHost *host = nullptr;
@@ -374,7 +395,8 @@ extern "C" DoomHudHost *doom_hud_host_open(void *level, uint32_t generation) {
             host->screen_id = screen_id; host->show = show; host->hide = hide; host->unregister = unregister; host->owns_screen = true; host->material_owned = true;
             host->find_screen = find_screen; host->find_element = find_element; host->get_owner = get_owner;
             host->get_screen_id = get_id; host->get_script_name = get_script;
-            host->lookup = lookup; host->is_visible = is_visible; host->set_visible = set_visible;
+            host->lookup = lookup; host->is_visible = is_visible;
+            host->is_actually_visible = is_actually_visible; host->set_visible = set_visible;
             if (!refresh_screen(host)) { hud_trace("Doom HUD: screen identity check failed\n"); (void)unregister(level, screen_id); host->owns_screen = false; doom_hud_host_destroy(host, level, generation); host = nullptr; }
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) { hud_trace("Doom HUD: exception during screen initialization\n"); return nullptr; }
@@ -564,6 +586,7 @@ extern "C" int doom_hud_host_update_layers(DoomHudHost *h, void *level, uint32_t
         const int status_ready = doom_hud_host_update(h->layers[0], level, nullptr, generation, status, hud_scale);
         const int message_ready = doom_hud_host_update(h->layers[1], level, nullptr, generation, message, 1.0f);
         stock_visibility(h, weapon_ready && status_ready && h->shown);
+        mirror_crosshair_dot(h);
         return weapon_ready && status_ready && message_ready;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }

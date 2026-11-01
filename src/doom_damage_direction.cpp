@@ -14,6 +14,7 @@ using GetLevelObject = void *(__fastcall *)(void *,int);
 using Cast = void *(__fastcall *)(void *,long,const void *,const void *,int);
 using Damage = void (__fastcall *)(void *,void *);
 thread_local int active_side=0;
+thread_local DoomEnvironmentDamageKind active_environment=DOOM_ENVIRONMENT_OTHER;
 thread_local void *active_receiver=nullptr;
 thread_local unsigned hook_depth=0;
 }
@@ -79,6 +80,15 @@ int bearing(DoomDamageDirection *d,void *receiver,void *info) {
     d->release(d->context);
     return side;
 }
+DoomEnvironmentDamageKind environment(void *info) {
+    __try {
+        if (!info) return DOOM_ENVIRONMENT_OTHER;
+        const int type=*reinterpret_cast<const int *>(static_cast<const unsigned char *>(info)+60);
+        if (type==11) return DOOM_ENVIRONMENT_FIRE;
+        if (type==57) return DOOM_ENVIRONMENT_ACID;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    return DOOM_ENVIRONMENT_OTHER;
+}
 void __fastcall damage_hook(void *receiver,void *info) {
     if (!hook_depth) AcquireSRWLockShared(&hook_lock);
     ++hook_depth;
@@ -91,11 +101,14 @@ void __fastcall damage_hook(void *receiver,void *info) {
     }
     d->hook_calls.fetch_add(1,std::memory_order_relaxed);
     int previous=active_side;
+    DoomEnvironmentDamageKind previous_environment=active_environment;
     void *previous_receiver=active_receiver;
     active_receiver=receiver;
     active_side=bearing(d,receiver,info);
+    active_environment=environment(info);
     d->original(receiver,info);
     active_side=previous;
+    active_environment=previous_environment;
     active_receiver=previous_receiver;
     if (!--hook_depth) ReleaseSRWLockShared(&hook_lock);
 }
@@ -138,6 +151,11 @@ extern "C" int doom_damage_direction_side(const DoomDamageDirection *d,const voi
         return active_side;
     }
     return 0;
+}
+extern "C" DoomEnvironmentDamageKind doom_damage_direction_environment(const DoomDamageDirection *d,const void *player) {
+    if (d && player && active_receiver==static_cast<const unsigned char *>(player)+24 &&
+        current.load(std::memory_order_acquire)==d) return active_environment;
+    return DOOM_ENVIRONMENT_OTHER;
 }
 extern "C" int doom_damage_direction_snapshot(const DoomDamageDirection *d,DoomDamageDirectionSnapshot *s) {
     if (!d || !s) return 0;

@@ -15,6 +15,7 @@ namespace {
 struct Vec3 { float x, y, z; };
 constexpr float HostDamagePerDoomUnit = 12.0f;
 using GetVector = Vec3 *(__fastcall *)(void *, Vec3 *);
+using GetScreenVector = Vec3 *(__fastcall *)(void *, Vec3 *, int, int);
 using GetBounds = const float *(__fastcall *)(void *);
 using GetLevel = void *(__fastcall *)(void *);
 using GetId = int (__fastcall *)(void *);
@@ -55,6 +56,7 @@ struct DoomCombat {
     unsigned char *game = nullptr;
     HMODULE engine = nullptr;
     GetVector camera_position = nullptr, camera_forward = nullptr, camera_up = nullptr;
+    GetScreenVector camera_screen_vector = nullptr;
     GetLevel get_level = nullptr;
     GetId get_id = nullptr;
     GetLevelObject get_object = nullptr;
@@ -104,6 +106,13 @@ extern "C" DoomCombat *doom_combat_create(void *game_module, void *engine_module
     c->camera_position=reinterpret_cast<GetVector>(GetProcAddress(engine,"?GetPosition@IBaseCamera@@QEBA?BVvec3@@XZ"));
     c->camera_forward=reinterpret_cast<GetVector>(GetProcAddress(engine,"?GetForwardVector@IBaseCamera@@QEBA?BVvec3@@XZ"));
     c->camera_up=reinterpret_cast<GetVector>(GetProcAddress(engine,"?GetUpVector@IBaseCamera@@QEBA?BVvec3@@XZ"));
+    auto screen_vector=reinterpret_cast<GetScreenVector>(GetProcAddress(engine,"?GetOnScreenVector@IBaseCamera@@QEAA?BVvec3@@HH@Z"));
+    static const unsigned char screen_prefix[]={0x48,0x83,0xec,0x18,0x48,0x8b,0x41,0x08,0x4c,0x8b,0xd1,0x80,0xb8,0xd0,0x02,0x00,0x00};
+    static const unsigned char screen_global[]={0x48,0x8b,0x05,0xa7,0x63,0x9a,0x00};
+    if (reinterpret_cast<void *>(screen_vector)==reinterpret_cast<unsigned char *>(engine)+0x124420 &&
+        !std::memcmp(reinterpret_cast<void *>(screen_vector),screen_prefix,sizeof(screen_prefix)) &&
+        !std::memcmp(reinterpret_cast<unsigned char *>(engine)+0x12446a,screen_global,sizeof(screen_global)))
+        c->camera_screen_vector=screen_vector;
     c->get_level=reinterpret_cast<GetLevel>(GetProcAddress(engine,"?GetLevel@IGSObject@@QEBAPEAVILevel@@XZ"));
     c->get_id=reinterpret_cast<GetId>(GetProcAddress(engine,"?GetID@IGSObject@@QEBAHXZ"));
     c->get_object=reinterpret_cast<GetLevelObject>(GetProcAddress(engine,"?GetObjectByID@ILevel@@QEBAPEAVIGSObject@@H@Z"));
@@ -238,6 +247,32 @@ void queue_hitscan_impact(DoomCombat *c, int weapon, Vec3 point, Vec3 direction,
     ++c->impact_count;
 }
 }
+static bool screen_center_direction(DoomCombat *c, void *camera, Vec3 *out) {
+    if (!c || !camera || !out || !c->camera_screen_vector || !c->engine) return false;
+    __try {
+        auto *base=reinterpret_cast<unsigned char *>(c->engine);
+        void *game=*reinterpret_cast<void **>(base+0xaca818);
+        if (!game) return false;
+        auto *size=*reinterpret_cast<const int *const *>(static_cast<unsigned char *>(game)+200);
+        if (!size) return false;
+        const int width=size[0], height=size[1];
+        if (width<320 || height<200 || width>16384 || height>16384) return false;
+        Vec3 direction{};
+        if (c->camera_screen_vector(camera,&direction,width/2,height/2)!=&direction || !valid(direction))
+            return false;
+        const float magnitude=std::sqrt(dot(direction,direction));
+        if (!std::isfinite(magnitude) || magnitude<0.0001f) return false;
+        *out={direction.x/magnitude,direction.y/magnitude,direction.z/magnitude};
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+extern "C" int doom_combat_camera_ray(DoomCombat *c, void *camera, DoomVec3 *direction) {
+    if (!direction) return 0;
+    Vec3 ray{};
+    if (!screen_center_direction(c,camera,&ray)) return 0;
+    *direction={ray.x,ray.z,ray.y};
+    return 1;
+}
 static int fire_hitscan(DoomCombat *c, void *player, void *level, void *camera,
                        const DoomEvent *event, float scale) {
     Vec3 pos{}, forward{}, up{};
@@ -248,6 +283,8 @@ static int fire_hitscan(DoomCombat *c, void *player, void *level, void *camera,
     if (!valid(*f)) { c->last_reason="camera_forward_invalid"; return 0; }
     if (!valid(*u)) { c->last_reason="camera_up_invalid"; return 0; }
     pos=*p; forward=unit({-f->x,-f->y,-f->z}); up=unit(*u);
+    Vec3 center{};
+    if (screen_center_direction(c,camera,&center)) forward=center;
     Vec3 right=unit(cross(up,forward));
     if (dot(forward,forward)<0.9f) { c->last_reason="camera_forward_degenerate"; return 0; }
     if (dot(right,right)<0.9f) { c->last_reason="camera_basis_degenerate"; return 0; }

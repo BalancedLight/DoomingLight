@@ -16,6 +16,8 @@ using ExecuteAction = uintptr_t (__fastcall *)(void *, void *, float, unsigned c
 using GetPlayer = void *(__fastcall *)(void *);
 
 std::atomic<bool> enabled{false};
+std::atomic<bool> carrying{false};
+std::atomic<bool> automap{false};
 unsigned char *game = nullptr;
 ExecuteAction original = nullptr;
 bool created = false;
@@ -41,6 +43,14 @@ bool suppress(void *action, float *neutral) {
         DWORD pid=0;
         GetWindowThreadProcessId(GetForegroundWindow(),&pid);
         if (pid!=GetCurrentProcessId()) return false;
+        if (id==8 && automap.load(std::memory_order_acquire)) return false;
+        if (carrying.load(std::memory_order_acquire)) {
+            switch (id) {
+            case 18: case 68: case 69: case 159: case 160: case 161: case 170: case 227:
+                return false;
+            default: break;
+            }
+        }
         const bool ordinary=camera_manager && field<void *>(camera_manager,64) &&
             (field<int>(camera_manager,88)==1 || field<int>(camera_manager,88)==2) &&
             reinterpret_cast<GetPlayer>(game+0x3c2d90)(singleton);
@@ -83,8 +93,16 @@ extern "C" int doom_menu_guard_start(void *game_module, int supported_profile) {
     return 1;
 }
 
+extern "C" void doom_menu_guard_set_carrying(int value) {
+    carrying.store(value!=0,std::memory_order_release);
+}
+extern "C" void doom_menu_guard_set_automap(int value) {
+    automap.store(value!=0,std::memory_order_release);
+}
 extern "C" int doom_menu_guard_stop(void) {
     enabled.store(false,std::memory_order_release);
+    carrying.store(false,std::memory_order_release);
+    automap.store(false,std::memory_order_release);
     if (!created || !game) return 1;
     const MH_STATUS status=MH_DisableHook(game+0x114d780);
     // Keep the trampoline alive for any already-entered callback.
@@ -92,5 +110,7 @@ extern "C" int doom_menu_guard_stop(void) {
 }
 #else
 extern "C" int doom_menu_guard_start(void *, int) { return 0; }
+extern "C" void doom_menu_guard_set_carrying(int) {}
+extern "C" void doom_menu_guard_set_automap(int) {}
 extern "C" int doom_menu_guard_stop(void) { return 1; }
 #endif

@@ -1,5 +1,6 @@
 #ifndef DOOM_DAMAGE_DIRECTION_H
 #define DOOM_DAMAGE_DIRECTION_H
+#include "doom_core.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,6 +22,7 @@ enum DoomDamageDirectionReason {
 DoomDamageDirection *doom_damage_direction_start(void *game, void *engine, DoomDamageViewFn view,
                                                 DoomDamageViewReleaseFn release, void *context);
 int doom_damage_direction_side(const DoomDamageDirection *direction, const void *player);
+DoomEnvironmentDamageKind doom_damage_direction_environment(const DoomDamageDirection *direction, const void *player);
 int doom_damage_direction_snapshot(const DoomDamageDirection *direction, DoomDamageDirectionSnapshot *snapshot);
 int doom_damage_direction_stop(DoomDamageDirection *direction);
 #ifdef __cplusplus

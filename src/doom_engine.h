@@ -33,7 +33,7 @@ enum DoomEngineCapability {
 
 typedef struct DoomEngineFrame {
     uint32_t map_generation;
-    int ready, paused, alive, respawn, fire, interact_failed;
+    int ready, paused, alive, respawn, fire, fire_held, carrying, interact_failed;
     int doom_dead, death_commit, parkour, interaction_active;
     int noclip, noclip_input, noclip_notice;
     unsigned move_state, edge_state;
@@ -44,6 +44,9 @@ typedef struct DoomEngineFrame {
     DoomPlayerVoiceObservation voice_observations[64];
     DoomNoclipDiagnostic noclip_diagnostic;
     int damage_side, damage_amount, body_suppression;
+    int invuln_requested;
+    const char *invuln_stage;
+    unsigned invuln_shader_calls, invuln_stock_binds, invuln_substitutions;
     unsigned damage_thread, update_thread;
     DoomDamageDirectionSnapshot direction;
     int weapon_select;
@@ -71,6 +74,7 @@ int doom_engine_lab_projectile_ready(DoomEngine *engine, DoomWeapon weapon);
 unsigned doom_engine_death_drain(DoomEngine *engine, DoomDeathRecord *out, unsigned capacity);
 void doom_engine_bind(DoomEngine *engine, DoomPlayer *player, DoomEventFn emit, void *context);
 void doom_engine_reset_damage(DoomEngine *engine);
+void doom_engine_sync_powerups(DoomEngine *engine);
 void doom_engine_configure(DoomEngine *engine, int classic, float incoming, float outgoing);
 void doom_engine_set_texture_filtering(DoomEngine *engine, int bilinear);
 int doom_engine_texture_filtering(DoomEngine *engine);

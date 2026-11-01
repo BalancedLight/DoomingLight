@@ -118,7 +118,7 @@ int doom_world_enemy_killed(DoomWorld *world, DoomPlayer *player, uint64_t death
 int doom_world_spawn_pickup(DoomWorld *world, DoomDrop kind, DoomVec3 position)
 {
     unsigned i;
-    if (!world || !valid_vec(position) || kind < DOOM_DROP_BULLETS || kind > DOOM_DROP_GREEN_ARMOR)
+    if (!world || !valid_vec(position) || kind < DOOM_DROP_BULLETS || kind >= DOOM_DROP_COUNT)
         return 0;
     for (i = 0; i < DOOM_WORLD_MAX_PICKUPS; i++)
         if (!world->pickups[i].active)
@@ -440,7 +440,7 @@ void doom_world_tick_with_pickups(DoomWorld *world, DoomPlayer *player, DoomVec3
         dx = p->position.x - position.x;
         dy = p->position.y - position.y;
         dz = p->position.z - position.z;
-        if (p->kind >= DOOM_DROP_BULLETS && p->kind <= DOOM_DROP_GREEN_ARMOR &&
+        if (p->kind >= DOOM_DROP_BULLETS && p->kind < DOOM_DROP_COUNT &&
             player->health > 0 && fabsf(dx) <= 36 && fabsf(dy) <= 36 && dz >= -8 && dz <= height)
         {
             int before = p->kind <= DOOM_DROP_CELLS ? player->ammo[(int)p->kind] :
@@ -451,7 +451,7 @@ void doom_world_tick_with_pickups(DoomWorld *world, DoomPlayer *player, DoomVec3
                             p->kind == DOOM_DROP_MEDIKIT ? player->health : player->armor;
                 p->active = 0;
                 if (pickup)
-                    pickup(context, p->kind, after - before);
+                    pickup(context, p->kind, p->kind >= DOOM_DROP_INVULNERABILITY ? 1 : after - before);
             }
         }
     }
@@ -461,10 +461,24 @@ void doom_world_tick(DoomWorld *world, DoomPlayer *player, DoomVec3 position, fl
 {
     doom_world_tick_with_pickups(world, player, position, height, host, 0, 0);
 }
+const char *doom_world_pickup_sprite_at(DoomDrop kind, unsigned age)
+{
+    static const char *const names[] = {"CLIPA0", "SHELA0", "ROCKA0", "CELLA0", "MEDIA0", "ARM1A0",
+        "PINVA0", "PSTRA0", "PINSA0", "SUITA0", "PMAPA0", "PVISA0"};
+    static const char *const invulnerability[] = {"PINVA0", "PINVB0", "PINVC0", "PINVD0"};
+    static const char *const invisibility[] = {"PINSA0", "PINSB0", "PINSC0", "PINSD0"};
+    static const char *const automap[] = {"PMAPA0", "PMAPB0", "PMAPC0", "PMAPD0", "PMAPC0", "PMAPB0"};
+    static const char *const light_amp[] = {"PVISA0", "PVISB0"};
+    if (kind == DOOM_DROP_GREEN_ARMOR) return age % 13u < 6u ? "ARM1A0" : "ARM1B0";
+    if (kind == DOOM_DROP_INVULNERABILITY) return invulnerability[(age / 6u) % 4u];
+    if (kind == DOOM_DROP_INVISIBILITY) return invisibility[(age / 6u) % 4u];
+    if (kind == DOOM_DROP_AUTOMAP) return automap[(age / 6u) % 6u];
+    if (kind == DOOM_DROP_LIGHT_AMP) return light_amp[(age / 6u) % 2u];
+    return kind >= DOOM_DROP_BULLETS && kind < DOOM_DROP_COUNT ? names[(int)kind] : 0;
+}
 const char *doom_world_pickup_sprite(DoomDrop kind)
 {
-    static const char *const names[] = {"CLIPA0", "SHELA0", "ROCKA0", "CELLA0", "MEDIA0", "ARM1A0"};
-    return kind >= DOOM_DROP_BULLETS && kind <= DOOM_DROP_GREEN_ARMOR ? names[(int)kind] : 0;
+    return doom_world_pickup_sprite_at(kind, 0);
 }
 const char *doom_world_bfg_hit_sprite(const DoomBfgHitFx *effect)
 {

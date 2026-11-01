@@ -16,6 +16,8 @@ typedef struct DoomDamageObservation {
 DoomCombat *doom_combat_create(void *game_module, void *engine_module);
 void doom_combat_destroy(DoomCombat *combat);
 void doom_combat_enable_decals(DoomCombat *combat, int supported_profile);
+/* Normalized center-screen ray in Doom coordinate order. */
+int doom_combat_camera_ray(DoomCombat *combat, void *camera, DoomVec3 *direction);
 /* Called on the Player game thread with freshly acquired objects. */
 int doom_combat_hitscan(DoomCombat *combat, void *player, void *level,
                         void *camera, const DoomEvent *event, float damage_scale);

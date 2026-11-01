@@ -16,6 +16,11 @@
 #include "doom_world_renderer.h"
 #include "doom_death_presentation.h"
 #include "doom_death_ui.h"
+#include "doom_powerups_host.h"
+#include "doom_powerups_camo.h"
+#include "doom_xp_guard.h"
+#include "doom_powerups_map.h"
+#include "doom_invuln_effect.h"
 #include <windows.h>
 #include <bcrypt.h>
 #include <intrin.h>
@@ -119,6 +124,8 @@ struct DoomEngine {
     unsigned update_depth = 0;
     unsigned char *game = nullptr;
     HMODULE engine_module = nullptr;
+    bool invuln_effect_started = false;
+    ULONGLONG next_invuln_attempt = 0;
     GetLevel get_level = nullptr;
     GetPosition get_position = nullptr;
     GetPosition get_camera_position = nullptr;
@@ -132,6 +139,13 @@ struct DoomEngine {
     bool death_ui_started = false;
     bool deaths_started = false;
     DoomWorldRenderer *world_renderer = nullptr;
+    DoomPowerupsHost *powerups_host = nullptr;
+    DoomXpGuard *xp_guard = nullptr;
+    DoomPowerupsMap *map_power = nullptr;
+    bool camouflage_started = false;
+    void *camouflage_level = nullptr;
+    void *powerups_level = nullptr;
+    uint32_t powerups_generation = 0;
     void *world_renderer_level = nullptr;
     uint32_t world_renderer_generation = 0;
     unsigned world_host_flags = 0;
@@ -141,6 +155,7 @@ struct DoomEngine {
     Patch keyboard, mouse, health, jump, interaction, level_destroy;
     std::array<bool,256> swallowed{}, forwarded{};
     bool fire = false, keyboard_fire = false, mouse_swallowed = false, mouse_forwarded = false;
+    bool carrying = false;
     int fire_key = VK_LCONTROL;
     bool interaction_down = false, interaction_failed = false;
     int selected = -1;
@@ -228,6 +243,30 @@ static int current_player_vitals(DoomEngine *e, void **actor_out, float *health_
         return 1;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
+static void sync_powerup_flags(DoomEngine *e, bool has_player, bool native_alive) {
+    const bool map=e->active && has_player && native_alive && e->player &&
+        e->player->health>0 && !e->death_wait && !e->death_committed &&
+        doom_power_active(e->player,DOOM_POWER_AUTOMAP);
+    doom_menu_guard_set_automap(map);
+    doom_powerups_map_set_active(e->map_power,map);
+}
+static int current_player_carrying(DoomEngine *e, void *actor) {
+    __try {
+        if (!e->stock_profile) return 0;
+        if (!actor || !e->level || actor!=e->local_player() ||
+            field<void *>(actor,0)!=e->game+0x17dd738 || current_player_level(e)!=e->level) return -1;
+        auto *carry=static_cast<unsigned char *>(actor)+0x920;
+        auto *table=field<void **>(carry,0);
+        static const unsigned char getter[]={0x8b,0x41,0x10,0xc3};
+        if (table!=reinterpret_cast<void **>(e->game+0x17df048) || table[8]!=e->game+0x12f5ac0 ||
+            std::memcmp(e->game+0x12f5ac0,getter,sizeof(getter))) return -1;
+        const unsigned count=reinterpret_cast<unsigned (__fastcall *)(void *)>(table[8])(carry);
+        const unsigned capacity=field<unsigned>(carry,20);
+        if (count>capacity || count>128 || (count && !field<void *>(carry,8)) ||
+            actor!=e->local_player() || current_player_level(e)!=e->level) return -1;
+        return count!=0;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
 namespace {
 std::atomic<DoomEngine *> current{nullptr};
 Keyboard stock_keyboard = nullptr;
@@ -249,6 +288,14 @@ uintptr_t __fastcall level_destroy_hook(void *receiver) {
     if (e) {
         std::lock_guard<std::recursive_mutex> lock(e->mutex);
         void *level=destroying_level(e,receiver);
+        if (level && e->camouflage_started && level==e->camouflage_level &&
+            doom_powerups_camo_forget()) {
+            e->camouflage_started=false; e->camouflage_level=nullptr;
+        }
+        if (level && e->powerups_host && level==e->powerups_level &&
+            doom_powerups_host_destroy(e->powerups_host,level,e->powerups_generation)) {
+            e->powerups_host=nullptr; e->powerups_level=nullptr; e->powerups_generation=0;
+        }
         if (level && e->world_renderer && level==e->world_renderer_level &&
             doom_world_renderer_destroy(e->world_renderer,level,e->world_renderer_generation)) {
             e->world_renderer=nullptr; e->world_renderer_level=nullptr;
@@ -300,20 +347,20 @@ static int apply_player_damage(DoomEngine *e, void *actor, int damage, int side)
         e->death_space_request=false;
         e->fire=false; e->keyboard_fire=false;
     }
+    sync_powerup_flags(e,true,true);
     return applied;
 }
 void __fastcall health_hook(void *receiver, float requested, unsigned char flags) {
-    const void *caller = _ReturnAddress();
     DoomEngine *e = current.load(std::memory_order_acquire);
     if (!e) { stock_health(receiver, requested, flags); return; }
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
-    if (!e->active ||
-        caller != e->game + 0xB178CA || !e->player || !e->level ||
+    if (!e->active || e->death_committed || !e->player || !e->level ||
         current_player_level(e) != e->level) {
         stock_health(receiver, requested, flags); return;
     }
     void *actor = e->local_player();
-    if (!actor || receiver != static_cast<unsigned char *>(actor) + 0x918) {
+    if (!actor || receiver != static_cast<unsigned char *>(actor) + 0x918 ||
+        field<void *>(actor,0x918) != e->game+0x17DEFB8) {
         stock_health(receiver, requested, flags); return;
     }
     const float old_health = reinterpret_cast<HealthGetter>(e->game + 0x969DB0)(actor);
@@ -324,6 +371,12 @@ void __fastcall health_hook(void *receiver, float requested, unsigned char flags
         !std::isfinite(e->incoming) || e->incoming < 0) {
         stock_health(receiver, requested, flags); return;
     }
+    if (doom_environment_protected(e->player,
+            doom_damage_direction_environment(e->damage_direction,actor))) {
+        stock_health(receiver,old_health,flags); return;
+    }
+    /* Environmental drains also commit through the local health interface.
+     * Admit the owned receiver rather than a single weapon-hit call site. */
     const double scaled = static_cast<double>(delta) * 100.0 /
                           static_cast<double>(max_health) * e->incoming;
     if (!std::isfinite(scaled) || scaled < 0 || scaled > INT_MAX) {
@@ -365,7 +418,8 @@ char __fastcall keyboard_hook(void *input, int key, unsigned char pressed, unsig
     }
     UINT mapped=MapVirtualKeyW(static_cast<UINT>(e->fire_key),MAPVK_VK_TO_VSC_EX);
     int fire_scan=static_cast<int>((mapped & 0xffu) | ((mapped & 0xff00u) ? 0x80u : 0u));
-    const bool fire_capture=combatEligible && mapped && key==fire_scan;
+    const bool fire_capture=combatEligible && !e->carrying && mapped && key==fire_scan;
+    if (mapped && key==fire_scan && !pressed) e->keyboard_fire=false;
     bool developer_shortcut = false;
 #if defined(DOOM_MODE_LAB)
     developer_shortcut = key>=2 && key<=10 && (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -424,7 +478,7 @@ uintptr_t __fastcall mouse_hook(void *input, int button, int pressed) {
     if (!e) return stock_mouse(input,button,pressed);
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (button == 0xF000) {
-        bool capture = e->active && e->gameplay();
+        bool capture = e->active && e->gameplay() && !e->carrying;
         if (capture || e->mouse_swallowed) {
             if (e->mouse_forwarded) {
                 stock_mouse(input,button,0);
@@ -451,6 +505,8 @@ extern "C" void doom_engine_destroy(DoomEngine *engine) {
     engine->player_voice=nullptr;
     doom_native_pickup_destroy(engine->native_pickup); engine->native_pickup=nullptr;
     doom_loot_adapter_destroy(engine->loot_adapter); engine->loot_adapter=nullptr;
+    doom_xp_guard_destroy(engine->xp_guard); engine->xp_guard=nullptr;
+    doom_powerups_map_destroy(engine->map_power); engine->map_power=nullptr;
     doom_noise_destroy(engine->noise); engine->noise=nullptr;
     doom_movement_sampler_destroy(engine->movement_sampler); engine->movement_sampler=nullptr;
     doom_deaths_destroy(engine->deaths);
@@ -470,6 +526,7 @@ extern "C" int doom_engine_begin_update(DoomEngine *e) {
         ++e->update_depth;
 #if defined(DOOM_MODE_RUNTIME)
         if (!e->active && e->death_ui_started && doom_death_ui_stop()) e->death_ui_started=false;
+        if (!e->active && e->invuln_effect_started && doom_invuln_effect_stop()) e->invuln_effect_started=false;
         if (!e->active && e->viewmodel_pending && doom_viewmodel_stop()) e->viewmodel_pending=false;
         if (!e->active && e->fpp_body_started && doom_fpp_body_stop()) e->fpp_body_started=false;
         if (!e->active && e->damage_direction && doom_damage_direction_stop(e->damage_direction))
@@ -673,6 +730,8 @@ static int current_shot_basis(DoomEngine *e, DoomVec3 *origin, DoomVec3 *directi
         PlayerPosition *f=e->get_camera_forward(camera,&forward);
         if (!p || !f || !std::isfinite(p->x) || !std::isfinite(p->y) || !std::isfinite(p->z) ||
             !std::isfinite(f->x) || !std::isfinite(f->y) || !std::isfinite(f->z)) return 0;
+        DoomVec3 optical{};
+        const bool have_optical=doom_combat_camera_ray(e->combat,camera,&optical)!=0;
         const float magnitude=std::sqrt(f->x*f->x+f->y*f->y+f->z*f->z);
         if (!std::isfinite(magnitude) || magnitude<0.0001f || game!=e->game_object() ||
             session!=field<void *>(game,0x508) || manager!=field<void *>(session,192) ||
@@ -680,7 +739,7 @@ static int current_shot_basis(DoomEngine *e, DoomVec3 *origin, DoomVec3 *directi
             current_player_level(e)!=e->level) return 0;
         *origin={p->x*DOOM_WORLD_UNITS_PER_METRE,p->z*DOOM_WORLD_UNITS_PER_METRE,
                  p->y*DOOM_WORLD_UNITS_PER_METRE};
-        *direction={-f->x/magnitude,-f->z/magnitude,-f->y/magnitude};
+        *direction=have_optical ? optical : DoomVec3{-f->x/magnitude,-f->z/magnitude,-f->y/magnitude};
         if (!std::isfinite(origin->x) || !std::isfinite(origin->y) || !std::isfinite(origin->z))
             return 0;
         return 1;
@@ -743,6 +802,14 @@ extern "C" void doom_engine_reset_damage(DoomEngine *e) {
     if (!e) return;
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     e->damage_carry = 0.0;
+}
+extern "C" void doom_engine_sync_powerups(DoomEngine *e) {
+    if (!e) return;
+    std::lock_guard<std::recursive_mutex> lock(e->mutex);
+    void *actor=nullptr; float health=0; bool alive=false;
+    const bool valid=e->active && e->in_update_scope() && e->level &&
+        current_player_vitals(e,&actor,&health,&alive);
+    sync_powerup_flags(e,valid,alive);
 }
 extern "C" void doom_engine_configure(DoomEngine *e, int classic, float incoming, float outgoing) {
     if (!e) return;
@@ -833,6 +900,8 @@ extern "C" int doom_engine_initialize(DoomEngine *e) {
 #if defined(DOOM_MODE_RUNTIME)
     if (stock && !e->player_voice) e->player_voice=doom_player_voice_create(game);
     if (stock && !e->reaction_guard) e->reaction_guard=doom_reaction_guard_create(game,engine);
+    if (stock && !e->xp_guard) e->xp_guard=doom_xp_guard_create(game,engine);
+    if (stock && !e->map_power) e->map_power=doom_powerups_map_create(game,engine);
     if (stock && !e->native_pickup) e->native_pickup=doom_native_pickup_create(game);
     if (stock && !e->loot_adapter) e->loot_adapter=doom_loot_adapter_create(game);
     if (!e->noise) e->noise=doom_noise_create(game,engine);
@@ -907,6 +976,23 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
     std::lock_guard<std::recursive_mutex> lock(e->mutex);
     if (!e->in_update_scope()) return 0;
 #if defined(DOOM_MODE_RUNTIME)
+    if (e->invuln_effect_started) {
+        if (!doom_invuln_effect_stop()) return 0;
+        e->invuln_effect_started=false;
+    }
+    e->next_invuln_attempt=0;
+    if (e->camouflage_started) {
+        if (!doom_powerups_camo_stop(e->local_player())) return 0;
+        e->camouflage_started=false; e->camouflage_level=nullptr;
+    }
+    if (!doom_xp_guard_stop(e->xp_guard)) return 0;
+    if (!doom_powerups_map_stop(e->map_power)) return 0;
+    if (e->powerups_host) {
+        void *old_level=current_owned_level(e);
+        if (!old_level || old_level!=e->powerups_level ||
+            !doom_powerups_host_destroy(e->powerups_host,old_level,e->powerups_generation)) return 0;
+        e->powerups_host=nullptr; e->powerups_level=nullptr; e->powerups_generation=0;
+    }
     if (e->death_ui_started) {
         if (!doom_death_ui_stop()) return 0;
         e->death_ui_started=false;
@@ -995,6 +1081,10 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
     if (!e->active) { doom_engine_deactivate(e); return 0; }
     if (e->reaction_guard && !doom_reaction_guard_start(e->reaction_guard,e->level,e->generation))
         OutputDebugStringA("Dooming Light: combat reaction guard unavailable\n");
+    if (e->xp_guard && !doom_xp_guard_start(e->xp_guard,e->level,e->generation))
+        OutputDebugStringA("Dooming Light: experience guard unavailable\n");
+    if (e->map_power && !doom_powerups_map_start(e->map_power))
+        OutputDebugStringA("Dooming Light: computer map unavailable\n");
 #if defined(DOOM_MODE_RUNTIME)
     if (e->stock_profile)
         e->death_ui_started=doom_death_ui_start(e->game,death_ui_after_update,e)!=0;
@@ -1010,6 +1100,12 @@ extern "C" int doom_engine_activate(DoomEngine *e, uint32_t generation) {
     }
     if (!doom_menu_guard_start(e->game,e->stock_profile ? 1 : 0))
         OutputDebugStringA("Dooming Light: player menu control unavailable\n");
+    if (e->stock_profile) {
+        e->powerups_host=doom_powerups_host_create(e->engine_module,e->level,e->generation);
+        if (e->powerups_host) { e->powerups_level=e->level; e->powerups_generation=e->generation; }
+        e->camouflage_started=doom_powerups_camo_start(e->game)!=0;
+        if (e->camouflage_started) e->camouflage_level=e->level;
+    }
     e->noclip_started=doom_noclip_start(e->game,e->engine_module,e->level,e->generation,e->stock_profile)!=0;
     if (e->native_pickup) (void)doom_native_pickup_start(e->native_pickup);
     if (e->loot_adapter) (void)doom_loot_adapter_start(e->loot_adapter);
@@ -1046,6 +1142,17 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
         if (!cleanupLevel && doom_noclip_active()) cleanupLevel=e->level;
     }
     (void)doom_menu_guard_stop();
+    if (e->invuln_effect_started && e->in_update_scope() && doom_invuln_effect_stop())
+        e->invuln_effect_started=false;
+    (void)doom_xp_guard_stop(e->xp_guard);
+    (void)doom_powerups_map_stop(e->map_power);
+    if (e->camouflage_started && e->in_update_scope() && doom_powerups_camo_stop(e->local_player())) {
+        e->camouflage_started=false; e->camouflage_level=nullptr;
+    }
+    if (e->powerups_host && cleanupLevel && cleanupLevel==e->powerups_level &&
+        doom_powerups_host_destroy(e->powerups_host,cleanupLevel,e->powerups_generation)) {
+        e->powerups_host=nullptr; e->powerups_level=nullptr; e->powerups_generation=0;
+    }
     if (e->death_ui_started && doom_death_ui_stop()) e->death_ui_started=false;
     (void)doom_noclip_stop();
     e->noclip_started=false; e->noclip_pending=false; e->noclip_return_pending=false;
@@ -1093,7 +1200,7 @@ extern "C" void doom_engine_deactivate(DoomEngine *e) {
     }
     doom_combat_world_unbind(e->combat);
     e->world_host_flags=0; e->world_host=nullptr;
-    e->active=false; e->fire=false; e->keyboard_fire=false;
+    e->active=false; e->fire=false; e->keyboard_fire=false; e->carrying=false;
     e->level=nullptr; e->damage_carry=0.0;
     e->last_actor=nullptr; e->native_alive_known=false; e->native_alive=false;
     e->respawn_pending=false;
@@ -1155,6 +1262,11 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
         e->noclip_return_pending=false;
     }
     frame->paused=!has_vitals || !e->gameplay();
+    const int carry_state=has_vitals && native_alive ? current_player_carrying(e,actor) : 0;
+    e->carrying=carry_state>0;
+    frame->carrying=carry_state!=0;
+    doom_menu_guard_set_carrying(e->carrying && !frame->paused);
+    sync_powerup_flags(e,has_vitals,native_alive);
     doom_loot_adapter_context(e->loot_adapter, has_vitals ? actor : nullptr,
         has_vitals ? e->level : nullptr, e->generation,
         has_vitals && native_alive && !frame->paused && e->player && e->player->health>0);
@@ -1179,6 +1291,39 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
     frame->direction=e->direction_snapshot;
     frame->parkour=!frame->paused && native_alive ? current_parkour(e,actor,frame) : 0;
 #if defined(DOOM_MODE_RUNTIME)
+    const unsigned invulnerability=e->player ? e->player->invulnerability_tics : 0;
+    const bool inverse=native_alive && e->player && e->player->health>0 &&
+        (invulnerability>128u || (invulnerability&8u)!=0);
+    if (inverse && !e->invuln_effect_started &&
+        GetTickCount64()>=e->next_invuln_attempt) {
+        e->invuln_effect_started=doom_invuln_effect_start(e->engine_module,nullptr)!=0;
+        e->next_invuln_attempt=GetTickCount64()+1000;
+        if (!e->invuln_effect_started) { (void)doom_invuln_effect_stop(); OutputDebugStringA("Dooming Light: inverse palette setup deferred\n"); }
+    }
+    if (e->invuln_effect_started && !doom_invuln_effect_set(inverse)) {
+        if (doom_invuln_effect_stop()) e->invuln_effect_started=false;
+        e->next_invuln_attempt=GetTickCount64()+1000;
+    }
+    DoomInvulnEffectDiagnostics inverse_diagnostic{};
+    doom_invuln_effect_diagnostics(&inverse_diagnostic);
+    frame->invuln_requested=inverse;
+    frame->invuln_stage=inverse_diagnostic.stage;
+    frame->invuln_shader_calls=inverse_diagnostic.shader_calls;
+    frame->invuln_stock_binds=inverse_diagnostic.stock_binds;
+    frame->invuln_substitutions=inverse_diagnostic.substitutions;
+    if (e->camouflage_started && has_vitals) {
+        const bool invisible=native_alive && e->player && e->player->health>0 &&
+            doom_power_active(e->player,DOOM_POWER_INVISIBILITY);
+        const float seconds=invisible ? e->player->power_tics[DOOM_POWER_INVISIBILITY]/35.0f : 0.0f;
+        (void)doom_powerups_camo_update(actor,invisible,seconds);
+    }
+    if (e->powerups_host) {
+        float camera[3]{};
+        const bool illuminate=!frame->paused && native_alive && e->player && e->player->health>0 &&
+            doom_power_active(e->player,DOOM_POWER_LIGHT_AMP) &&
+            current_camera_position(e,&camera[0],&camera[1],&camera[2]);
+        (void)doom_powerups_host_update(e->powerups_host,e->level,e->generation,illuminate,camera);
+    }
     if (e->stock_profile && !frame->paused && native_alive)
         frame->interaction_active=doom_interaction_state(e->game,actor)>0;
 #endif
@@ -1232,6 +1377,8 @@ extern "C" int doom_engine_poll(DoomEngine *e, DoomEngineFrame *frame) {
         frame->respawn=1; e->respawn_pending=false;
     }
     frame->fire=!frame->paused && !e->death_wait && (e->fire || e->keyboard_fire);
+    frame->fire_held=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0 ||
+                     (GetAsyncKeyState(e->fire_key)&0x8000)!=0;
     frame->weapon_select=e->selected; e->selected=-1;
     frame->weapon_slot=e->selected_slot; e->selected_slot=-1;
     frame->interact_failed=e->interaction_failed && !frame->paused;

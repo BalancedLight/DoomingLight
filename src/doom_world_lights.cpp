@@ -21,10 +21,12 @@ bool valid_position(const float *p) {
 }
 struct DoomWorldLights {
     unsigned char *base;
-    void *level, *fx, *defs, *plasma, *bfg;
+    void *level, *fx, *defs, *plasma, *bfg, *rocket_flash, *amp;
+    void *plasma_flash, *bfg_flash, *bfg_tracer;
     uint32_t generation;
     bool quarantined;
-    LightSlot slots[8];
+    /* Separate pools keep sustained projectiles and powerups from exhausting flashes. */
+    LightSlot slots[33];
 };
 namespace {
 bool valid(DoomWorldLights *l, void *level, uint32_t generation) {
@@ -82,17 +84,41 @@ extern "C" DoomWorldLights *doom_world_lights_create(void *module, void *level, 
                     create(&l->plasma); create(&l->bfg);
                     static const char plasma[] = "LightDef(){ Meter() LifeTime(){keyf(0,600)} Scale(){keyv(0,2,2,2)} Colour(){keyv(0,0.2,0.5,1)} Intensity(){keyf(0,1)} TurnOffDistance(){keyf(0,25)} }";
                     static const char bfg[] = "LightDef(){ Meter() LifeTime(){keyf(0,600)} Scale(){keyv(0,3,3,3)} Colour(){keyv(0,0.2,1,0.2)} Intensity(){keyf(0,1)} TurnOffDistance(){keyf(0,25)} }";
+                    static const char rocket_flash[] = "LightDef(){ Meter() LifeTime(){keyf(0,600)} Scale(){keyv(0,4.5,4.5,4.5)} Colour(){keyv(0,1,0.45,0.1)} Intensity(){keyf(0,1.8) keyf(0.1,1.8) keyf(0.5,0)} TurnOffDistance(){keyf(0,25)} }";
+                    static const char plasma_flash[] = "LightDef(){ Meter() LifeTime(){keyf(0,600)} Scale(){keyv(0,3.5,3.5,3.5)} Colour(){keyv(0,0.2,0.5,1)} Intensity(){keyf(0,2) keyf(0.08,2) keyf(0.55,0)} TurnOffDistance(){keyf(0,25)} }";
+                    static const char bfg_flash[] = "LightDef(){ Meter() LifeTime(){keyf(0,600)} Scale(){keyv(0,8,8,8)} Colour(){keyv(0,0.2,1,0.15)} Intensity(){keyf(0,3.5) keyf(0.2,3.5) keyf(1.35,0)} TurnOffDistance(){keyf(0,40)} }";
+                    static const char bfg_tracer[] = "LightDef(){ Meter() LifeTime(){keyf(0,600)} Scale(){keyv(0,3.5,3.5,3.5)} Colour(){keyv(0,0.2,1,0.15)} Intensity(){keyf(0,2.5) keyf(0.08,2.5) keyf(0.9,0)} TurnOffDistance(){keyf(0,30)} }";
                     success = l->plasma && l->bfg && parse(l->plasma, "doom_plasma_light.fx", plasma) &&
                               parse(l->bfg, "doom_bfg_light.fx", bfg);
+                    if (success) {
+                        create(&l->rocket_flash);
+                        if (l->rocket_flash && !parse(l->rocket_flash, "doom_rocket_flash.fx", rocket_flash))
+                            release_def(l, l->rocket_flash);
+                        create(&l->plasma_flash);
+                        if (l->plasma_flash && !parse(l->plasma_flash, "doom_plasma_flash.fx", plasma_flash))
+                            release_def(l, l->plasma_flash);
+                        create(&l->bfg_flash);
+                        if (l->bfg_flash && !parse(l->bfg_flash, "doom_bfg_flash.fx", bfg_flash))
+                            release_def(l, l->bfg_flash);
+                        create(&l->bfg_tracer);
+                        if (l->bfg_tracer && !parse(l->bfg_tracer, "doom_bfg_tracer.fx", bfg_tracer))
+                            release_def(l, l->bfg_tracer);
+                        create(&l->amp);
+                        static const char amp[] = "LightDef(){ Meter() LifeTime(){keyf(0,600)} Scale(){keyv(0,18,18,18)} Colour(){keyv(0,1,1,1)} Intensity(){keyf(0,1.4)} TurnOffDistance(){keyf(0,35)} }";
+                        if (l->amp && !parse(l->amp, "doom_light_amp.fx", amp))
+                            release_def(l, l->amp);
+                    }
                 }
             }
         }
-        if (!success && (l->plasma || l->bfg)) {
+        if (!success && (l->plasma || l->bfg || l->rocket_flash || l->amp ||
+                         l->plasma_flash || l->bfg_flash || l->bfg_tracer)) {
             if (!valid(l, level, generation)) {
                 l->quarantined = true;
                 return l;
             }
-            release_def(l, l->plasma); release_def(l, l->bfg);
+            release_def(l, l->plasma); release_def(l, l->bfg); release_def(l, l->rocket_flash); release_def(l, l->amp);
+            release_def(l, l->plasma_flash); release_def(l, l->bfg_flash); release_def(l, l->bfg_tracer);
         }
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         l->quarantined = true;
@@ -102,13 +128,28 @@ extern "C" DoomWorldLights *doom_world_lights_create(void *module, void *level, 
     return l;
 }
 extern "C" uint32_t doom_world_lights_add(DoomWorldLights *l, void *level, uint32_t generation,
-                                           const float position[3], int bfg) {
+                                           const float position[3], int kind) {
     if (!valid_position(position) || !valid(l, level, generation)) return 0;
+    if (kind < DOOM_WORLD_LIGHT_PLASMA || kind > DOOM_WORLD_LIGHT_BFG_TRACER) return 0;
     __try {
-        for (auto &slot : l->slots) if (!slot.token) {
+        unsigned first = 0, end = 8;
+        void *definition = nullptr;
+        switch (kind) {
+        case DOOM_WORLD_LIGHT_PLASMA: definition = l->plasma; break;
+        case DOOM_WORLD_LIGHT_BFG: definition = l->bfg; break;
+        case DOOM_WORLD_LIGHT_ROCKET_FLASH: first = 8; end = 12; definition = l->rocket_flash; break;
+        case DOOM_WORLD_LIGHT_AMP: first = 12; end = 13; definition = l->amp; break;
+        case DOOM_WORLD_LIGHT_PLASMA_FLASH: first = 13; end = 21; definition = l->plasma_flash; break;
+        case DOOM_WORLD_LIGHT_BFG_FLASH: first = 21; end = 25; definition = l->bfg_flash; break;
+        case DOOM_WORLD_LIGHT_BFG_TRACER: first = 25; end = 33; definition = l->bfg_tracer; break;
+        default: return 0;
+        }
+        if (!definition) return 0;
+        for (unsigned i = first; i < end; ++i) if (!l->slots[i].token) {
+            auto &slot = l->slots[i];
             auto **v = *reinterpret_cast<void ***>(l->fx);
             const float up[3] = {0, 1, 0};
-            unsigned handle = reinterpret_cast<CreateLight>(v[44])(l->fx, bfg ? l->bfg : l->plasma, position, up, nullptr, -1);
+            unsigned handle = reinterpret_cast<CreateLight>(v[44])(l->fx, definition, position, up, nullptr, -1);
             if (!handle) return 0;
             unsigned token = static_cast<unsigned>(InterlockedIncrement(&next_token));
             if (!token) token = static_cast<unsigned>(InterlockedIncrement(&next_token));
@@ -140,7 +181,8 @@ extern "C" int doom_world_lights_destroy(DoomWorldLights *l, void *level, uint32
     if (!valid(l, level, generation)) return 0;
     __try {
         for (auto &slot : l->slots) if (slot.token) clear_slot(l, slot);
-        release_def(l, l->plasma); release_def(l, l->bfg);
+        release_def(l, l->plasma); release_def(l, l->bfg); release_def(l, l->rocket_flash); release_def(l, l->amp);
+        release_def(l, l->plasma_flash); release_def(l, l->bfg_flash); release_def(l, l->bfg_tracer);
     } __except(EXCEPTION_EXECUTE_HANDLER) { l->quarantined = true; return 0; }
     HeapFree(GetProcessHeap(), 0, l);
     return 1;

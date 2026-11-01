@@ -11,16 +11,21 @@ constexpr unsigned HitOffset = DOOM_WORLD_MAX_PROJECTILES;
 constexpr unsigned ImpactOffset = HitOffset + DOOM_WORLD_MAX_BFG_HIT_FX;
 constexpr unsigned PickupOffset = ImpactOffset + DOOM_WORLD_MAX_HIT_FX;
 constexpr unsigned MaxSprites = PickupOffset + DOOM_WORLD_MAX_PICKUPS;
-constexpr unsigned MaxImages = 48, MaxNativeSprites = 64;
+constexpr unsigned MaxImages = 64, MaxNativeSprites = 64;
+constexpr unsigned LightMask = DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG |
+    DOOM_WORLD_SPRITE_LIGHT_ROCKET_FLASH | DOOM_WORLD_SPRITE_LIGHT_PLASMA_FLASH |
+    DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH | DOOM_WORLD_SPRITE_LIGHT_BFG_TRACER;
 struct Image {
     char name[9]{};
     uint8_t *pixels = nullptr;
-    unsigned edge = 0, height = 0;
+    unsigned edge = 0;
+    float pickup_anchor = 0;
     bool mirror = false;
 };
 struct Sprite {
     uint32_t token = 0;
     unsigned age = 0, edge = 0, flags = 0;
+    float pickup_anchor = 0;
     bool mirror = false;
     char name[9]{};
 };
@@ -42,6 +47,12 @@ Wanted desired(const DoomWorld *world, unsigned index, const DoomVec3 *viewer) {
                 w.flags |= DOOM_WORLD_SPRITE_LIGHT_PLASMA;
             if (p.state == DOOM_PROJECTILE_FLYING && p.weapon == DOOM_BFG)
                 w.flags |= DOOM_WORLD_SPRITE_LIGHT_BFG;
+            if (p.state == DOOM_PROJECTILE_IMPACT && p.weapon == DOOM_ROCKET)
+                w.flags |= DOOM_WORLD_SPRITE_LIGHT_ROCKET_FLASH;
+            if (p.state == DOOM_PROJECTILE_IMPACT && p.weapon == DOOM_PLASMA)
+                w.flags |= DOOM_WORLD_SPRITE_LIGHT_PLASMA_FLASH;
+            if (p.state == DOOM_PROJECTILE_IMPACT && p.weapon == DOOM_BFG)
+                w.flags |= DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH;
         }
         w.edge = p.weapon == DOOM_BFG ? 256u : p.weapon == DOOM_ROCKET ? 128u : 64u;
         if (w.name && p.state == DOOM_PROJECTILE_FLYING && p.weapon == DOOM_ROCKET) {
@@ -66,7 +77,7 @@ Wanted desired(const DoomWorld *world, unsigned index, const DoomVec3 *viewer) {
         const DoomBfgHitFx &fx = world->bfg_hit_fx[index - HitOffset];
         w.name = doom_world_bfg_hit_sprite(&fx);
         w.position = fx.position; w.age = fx.age; w.edge = 64;
-        w.flags = DOOM_WORLD_SPRITE_FULLBRIGHT;
+        w.flags = DOOM_WORLD_SPRITE_FULLBRIGHT | DOOM_WORLD_SPRITE_LIGHT_BFG_TRACER;
     } else if (index < PickupOffset) {
         const DoomHitFx &fx = world->hit_fx[index - ImpactOffset];
         w.name = doom_world_hit_fx_sprite(&fx);
@@ -76,13 +87,17 @@ Wanted desired(const DoomWorld *world, unsigned index, const DoomVec3 *viewer) {
     } else {
         const DoomPickup &p = world->pickups[index - PickupOffset];
         if (p.active && p.grounded) {
-            w.name = doom_world_pickup_sprite(p.kind);
-            if (p.kind == DOOM_DROP_GREEN_ARMOR && p.age % 13u >= 6u) {
-                w.name = "ARM1B0";
-                w.flags = DOOM_WORLD_SPRITE_FULLBRIGHT;
-            }
+            w.name = doom_world_pickup_sprite_at(p.kind, p.age);
+            w.flags = DOOM_WORLD_SPRITE_PICKUP;
+            if ((p.kind == DOOM_DROP_GREEN_ARMOR && p.age % 13u >= 6u) ||
+                p.kind == DOOM_DROP_INVULNERABILITY || p.kind == DOOM_DROP_BERSERK ||
+                p.kind == DOOM_DROP_INVISIBILITY || p.kind == DOOM_DROP_RADIATION_SUIT ||
+                p.kind == DOOM_DROP_AUTOMAP || (p.kind == DOOM_DROP_LIGHT_AMP && (p.age / 6u) % 2u == 0))
+                w.flags |= DOOM_WORLD_SPRITE_FULLBRIGHT;
         }
-        w.position = p.position; w.age = p.age; w.edge = 32; w.pickup = true;
+        w.position = p.position; w.age = p.age;
+        w.edge = p.kind == DOOM_DROP_RADIATION_SUIT ? 64u : 32u;
+        w.pickup = true;
     }
     return w;
 }
@@ -110,6 +125,14 @@ static const Image *picture(DoomWorldDisplay *d, const DoomWad *wad, const Wante
         u16(lump.data) > w.edge || u16(lump.data + 2) > w.edge) return nullptr;
     DoomImage decoded{};
     if (!doom_wad_patch(wad, w.name, &decoded)) return nullptr;
+    unsigned ink_bottom = 0;
+    bool has_ink = false;
+    if (w.pickup)
+        for (unsigned y = 0; y < decoded.height; ++y)
+            for (unsigned x = 0; x < decoded.width; ++x)
+                if (decoded.rgba[(static_cast<size_t>(y) * decoded.width + x) * 4 + 3]) {
+                    ink_bottom = y + 1; has_ink = true;
+                }
     const size_t bytes = static_cast<size_t>(w.edge) * w.edge * 4;
     auto *pixels = static_cast<uint8_t *>(std::calloc(bytes, 1));
     if (pixels) {
@@ -125,7 +148,12 @@ static const Image *picture(DoomWorldDisplay *d, const DoomWad *wad, const Wante
         }
         const size_t name_size = std::strlen(w.name);
         if (name_size < sizeof(slot->name)) std::memcpy(slot->name, w.name, name_size + 1);
-        slot->pixels = pixels; slot->edge = w.edge; slot->height = decoded.height; slot->mirror = w.mirror;
+        const float floating = decoded.top > static_cast<int>(decoded.height)
+            ? static_cast<float>(decoded.top - static_cast<int>(decoded.height)) : 0.0f;
+        const unsigned bottom = has_ink ? ink_bottom : decoded.height;
+        const float bottom_offset = static_cast<float>(top + bottom) - static_cast<float>(w.edge) * 0.5f;
+        slot->pickup_anchor = (bottom_offset > 0.0f ? bottom_offset : 0.0f) + floating + 1.0f;
+        slot->pixels = pixels; slot->edge = w.edge; slot->mirror = w.mirror;
     }
     doom_image_free(&decoded);
     return pixels ? slot : nullptr;
@@ -165,8 +193,7 @@ extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine
     for (unsigned i = 0; i < MaxSprites; ++i) {
         Sprite &slot = d->sprites[i];
         Wanted w = desired(world, i, viewer_ptr);
-        if (!dynamic_lights) w.flags &= ~(DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG);
-        constexpr unsigned LightMask = DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG;
+        if (!dynamic_lights) w.flags &= ~LightMask;
         if (slot.token && (!admitted[i] || !w.name || w.age < slot.age || slot.edge != w.edge ||
                            ((slot.flags ^ w.flags) & LightMask))) {
             if (!doom_engine_world_sprite_remove(engine, slot.token)) { d->blocked = true; return 0; }
@@ -179,16 +206,17 @@ extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine
         Sprite &slot = d->sprites[i];
         Wanted w = desired(world, i, viewer_ptr);
         if (!w.name || !admitted[i]) continue;
-        if (!dynamic_lights) w.flags &= ~(DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG);
+        if (!dynamic_lights) w.flags &= ~LightMask;
         const bool change = !slot.token || slot.mirror != w.mirror || std::strcmp(slot.name, w.name) != 0;
         if (change && ((!slot.token && (creates >= 2 || native_count >= MaxNativeSprites)) ||
                        (slot.token && updates >= 4))) continue;
         const Image *p = change ? picture(d, wad, w) : nullptr;
         if (change && !p) continue;
-        /* The billboard vertices extend by the particle size in each direction.
-         * Keep the pickup anchored at half its visible height. */
+        /* Position the lowest visible texel above the settled ground point. */
         const float sprite_scale = w.pickup ? 0.5f : 1.0f;
-        if (w.pickup) w.position.z += static_cast<float>(change ? p->height : 0) * 0.5f;
+        if (w.pickup && change) w.position.z += p->pickup_anchor;
+        const bool created = !slot.token;
+        const bool pickup_moved = w.pickup && change && !created && slot.pickup_anchor != p->pickup_anchor;
         if (!slot.token) {
             ++creates;
             slot.token = doom_engine_world_sprite_add(engine, p->pixels, p->edge, w.position,
@@ -205,11 +233,12 @@ extern "C" int doom_world_display_update(DoomWorldDisplay *d, DoomEngine *engine
             const size_t name_size = std::strlen(w.name);
             if (name_size < sizeof(slot.name)) std::memcpy(slot.name, w.name, name_size + 1);
             slot.mirror = w.mirror;
+            if (w.pickup) slot.pickup_anchor = p->pickup_anchor;
         }
         slot.age = w.age;
-        /* Pickups do not move. Their initial placement includes half their
-         * sprite height; projectile positions are refreshed every update. */
-        if (!w.pickup && !doom_engine_world_sprite_move(engine, slot.token, w.position)) {
+        /* Animated pickups move only if their frame's ground anchor changes. */
+        if ((!w.pickup || pickup_moved) &&
+            !doom_engine_world_sprite_move(engine, slot.token, w.position)) {
             d->blocked = true; return 0;
         }
     }

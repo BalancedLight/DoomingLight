@@ -28,7 +28,7 @@ unsigned doom_world_render_sprites(const DoomWorld *world, DoomSpriteSink sink, 
     for (i = 0; i < DOOM_WORLD_MAX_PICKUPS; i++)
     {
         const DoomPickup *pickup = &world->pickups[i];
-        const char *name = pickup->active ? doom_world_pickup_sprite(pickup->kind) : 0;
+        const char *name = pickup->active ? doom_world_pickup_sprite_at(pickup->kind, pickup->age) : 0;
         if (name && sink(context, DOOM_SPRITE_PICKUP, name, pickup->position))
             ++count;
     }

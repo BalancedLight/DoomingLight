@@ -33,6 +33,8 @@ static inline int doom_menu_guard_blocks_action(unsigned int id)
 
 /* The caller selects the independently validated Player profile. */
 int doom_menu_guard_start(void *game_module, int supported_profile);
+void doom_menu_guard_set_carrying(int carrying);
+void doom_menu_guard_set_automap(int enabled);
 int doom_menu_guard_stop(void);
 
 #ifdef __cplusplus

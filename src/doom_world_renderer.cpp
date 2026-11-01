@@ -164,7 +164,8 @@ extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level
         if(!s->emitter||!s->particle) { trace_failure("Doom world: definition creation failed\n"); __leave; }
         const char *emitter="EmiterDef(){ Meter() Space(\"local\") GenType(\"one_time\") GenArea(\"point\") LifeTime(){keyf(0,0)} NumParticles(){keyf(0,1)} }";
         if(!reinterpret_cast<ParseEmitter>(b+0x21d830)(nullptr,s->emitter,"doom_emitter.fx",emitter)) { trace_failure("Doom world: emitter definition rejected\n"); __leave; }
-        std::snprintf(script,sizeof script,"ParticleDef(){ Meter() LifeTime(){keyf(0,600)} GravityMul(){keyf(0,0)} Drag(){keyf(0,0)} WindInfluence(){keyf(0,0)} Size(){keyf(0,%f)} Color(){keyv4(0,1,1,1,1)} Material(\"dw_soft_smoke_vfb.mat\",\"dw_soft_smoke_vfb.mat\") }",size);
+        const char *material=(flags & DOOM_WORLD_SPRITE_PICKUP) ? "dw_soft_smoke.mat" : "dw_soft_smoke_vfb.mat";
+        std::snprintf(script,sizeof script,"ParticleDef(){ Meter() LifeTime(){keyf(0,600)} GravityMul(){keyf(0,0)} Drag(){keyf(0,0)} WindInfluence(){keyf(0,0)} Size(){keyf(0,%f)} Color(){keyv4(0,1,1,1,1)} Material(\"%s\",\"%s\") }",size,material,material);
         if(!reinterpret_cast<ParseParticle>(b+0x21faa0)(s->particle,"doom_particle.fx",script)) { trace_failure("Doom world: particle definition rejected\n"); __leave; }
         auto **material_ptr=reinterpret_cast<void **>(static_cast<unsigned char *>(s->particle)+104);
         original=*material_ptr; if(!original) { trace_failure("Doom world: source material unavailable\n"); __leave; }
@@ -187,13 +188,19 @@ extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level
         const float up[3]={0,1,0};
         s->handle=reinterpret_cast<CreateFx>(fxv[37])(r->fx,s->emitter,s->particle,position,up,nullptr,-1);
         if(!s->handle) { trace_failure("Doom world: emitter creation failed\n"); __leave; }
-        if (flags & (DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG)) {
+        if (flags & (DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG |
+                     DOOM_WORLD_SPRITE_LIGHT_ROCKET_FLASH | DOOM_WORLD_SPRITE_LIGHT_PLASMA_FLASH |
+                     DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH | DOOM_WORLD_SPRITE_LIGHT_BFG_TRACER)) {
             if (!r->light_attempted) {
                 r->light_attempted=true;
                 r->lights=doom_world_lights_create(r->base,r->level,r->generation);
             }
-            if (r->lights) s->light=doom_world_lights_add(r->lights,r->level,r->generation,position,
-                                                          (flags & DOOM_WORLD_SPRITE_LIGHT_BFG)!=0);
+            const int kind = (flags & DOOM_WORLD_SPRITE_LIGHT_BFG_TRACER) ? DOOM_WORLD_LIGHT_BFG_TRACER :
+                             (flags & DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH) ? DOOM_WORLD_LIGHT_BFG_FLASH :
+                             (flags & DOOM_WORLD_SPRITE_LIGHT_PLASMA_FLASH) ? DOOM_WORLD_LIGHT_PLASMA_FLASH :
+                             (flags & DOOM_WORLD_SPRITE_LIGHT_ROCKET_FLASH) ? DOOM_WORLD_LIGHT_ROCKET_FLASH :
+                             (flags & DOOM_WORLD_SPRITE_LIGHT_BFG) ? DOOM_WORLD_LIGHT_BFG : DOOM_WORLD_LIGHT_PLASMA;
+            if (r->lights) s->light=doom_world_lights_add(r->lights,r->level,r->generation,position,kind);
         }
         trace_failure("Doom world: sprite created\n");
         return s->serial;

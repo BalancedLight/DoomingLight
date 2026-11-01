@@ -116,8 +116,8 @@ struct Runtime {
     std::array<uint8_t, 320 * 16 * 4> messagePixels{};
     DoomPickupFeedback pickupFeedback{};
     DoomVehicleFeedback vehicleFeedback{};
-    bool pickupSoundQueued = false;
-    bool combatSuspended = false, handBusy = false, weaponReturning = false;
+    bool pickupSoundQueued = false, pickupPowerSoundQueued = false;
+    bool combatSuspended = false, handBusy = false, weaponReturning = false, carryFireLatch = false;
     bool deathSoundPlayed = false;
     std::deque<std::string> nativePickupMessages;
     uint64_t nextNativePickupMessage = 0;
@@ -129,6 +129,11 @@ struct Runtime {
     uint64_t motionSampleAt = 0;
     unsigned lastDamageSequence = 0;
     float motionX = 0.0f, motionZ = 0.0f, lastMotionSpeed = 0.0f;
+    DoomNoclipDiagnostic lastNoclipDiagnostic{};
+    unsigned noclipDiagnosticLogs = 0;
+    const char *lastInvulnStage = nullptr;
+    uint64_t nextInvulnDiagnostic = 0;
+    unsigned invulnDiagnosticLogs = 0;
 #if defined(DOOM_MODE_RUNTIME)
     uint64_t nextPositionLog = 0;
     std::array<unsigned, DOOM_WEAPON_COUNT> attackLogCount{};
@@ -152,8 +157,6 @@ struct Runtime {
     uint64_t nextMovementSample = 0;
     unsigned movementSampleCount = 0;
     int lastMovementError = 0;
-    DoomNoclipDiagnostic lastNoclipDiagnostic{};
-    unsigned noclipDiagnosticLogs = 0;
     std::array<unsigned, DOOM_WORLD_MAX_PROJECTILES> tracedAge{};
     std::array<int, DOOM_WORLD_MAX_PROJECTILES> tracedState{};
 #endif
@@ -608,6 +611,7 @@ struct Runtime {
         }
         else if (event->type == DOOM_EVENT_CHEAT) {
             doom_engine_reset_damage(self.engine);
+            doom_engine_sync_powerups(self.engine);
             const char *message=nullptr;
             switch (event->value) {
             case DOOM_CHEAT_GOD:
@@ -616,6 +620,8 @@ struct Runtime {
             case DOOM_CHEAT_AMMO: message="Ammo (no keys) Added"; break;
             case DOOM_CHEAT_AMMO_KEYS: message="Very Happy Ammo Added"; break;
             case DOOM_CHEAT_CHOPPERS: message="... doesn't suck - GM"; break;
+            case DOOM_CHEAT_BEHOLD_MENU: message="inVuln, Str, Inviso, Rad, Allmap, or Lite-amp"; break;
+            case DOOM_CHEAT_BEHOLD_POWER: message="Power-up Toggled"; break;
             case DOOM_CHEAT_NOCLIP:
                 if (!doom_engine_request_noclip(self.engine)) message="Noclip Unavailable";
                 break;
@@ -650,7 +656,12 @@ struct Runtime {
     static void onPickup(void* context, DoomDrop kind, int amount) {
         Runtime& self = *static_cast<Runtime*>(context);
         doom_pickup_feedback_record(&self.pickupFeedback, kind, amount);
-        if (amount > 0) self.pickupSoundQueued = true;
+        doom_engine_sync_powerups(self.engine);
+        if (amount > 0) {
+            self.pickupSoundQueued = true;
+            if (kind >= DOOM_DROP_INVULNERABILITY && kind < DOOM_DROP_COUNT)
+                self.pickupPowerSoundQueued = true;
+        }
     }
 #endif
     void beginAssets() {
@@ -676,15 +687,18 @@ struct Runtime {
         active = false;
         doom_gamepad_reset(gamepad);
         retryActivationAt=0;
-        combatSuspended=false; handBusy=false; weaponReturning=false;
+        combatSuspended=false; handBusy=false; weaponReturning=false; carryFireLatch=false;
         deathSoundPlayed=false;
         nativePickupMessages.clear(); nextNativePickupMessage=0;
         flyHudTick=0;
+        lastNoclipDiagnostic={}; noclipDiagnosticLogs=0;
+        lastInvulnStage=nullptr; nextInvulnDiagnostic=0; invulnDiagnosticLogs=0;
         lastDamageSequence=0;
         resetMotion();
         doom_pickup_feedback_reset(&pickupFeedback);
         doom_vehicle_feedback_reset(&vehicleFeedback);
         pickupSoundQueued = false;
+        pickupPowerSoundQueued = false;
         sawStartupUntil = 0;
 #if defined(DOOM_MODE_RUNTIME)
         if (worldDisplay && engine) (void)doom_world_display_close(worldDisplay, engine);
@@ -754,16 +768,29 @@ struct Runtime {
         doom_engine_allow_native_pickups(engine,0);
         doom_audio_poll(audio);
         doom_audio_pause(audio, frame.paused && !frame.noclip_input);
-#if defined(DOOM_MODE_LAB)
-        if (noclipDiagnosticLogs<64 && (!noclipDiagnosticLogs ||
-                std::memcmp(&lastNoclipDiagnostic,&frame.noclip_diagnostic,sizeof(lastNoclipDiagnostic)))) {
-            const auto &d=frame.noclip_diagnostic;
-            char message[256]{};
+        if (frame.invuln_requested && invulnDiagnosticLogs<64 &&
+            (frame.invuln_stage!=lastInvulnStage || now()>=nextInvulnDiagnostic)) {
+            char message[224]{};
             std::snprintf(message,sizeof(message),
-                "Doom lab noclip: enabled=%d tracked=%d validation=%d camera=%d saved=%d owner=%d actor=%d input=%d transition=%d",
-                d.enabled,d.tracked,d.validation,d.camera_mode,d.saved,d.owner,d.actor,d.input_mode,d.last_transition);
-            log("INFO",message); lastNoclipDiagnostic=d; ++noclipDiagnosticLogs;
+                "Dooming Light inverse palette: stage=%s calls=%u stock=%u substitutions=%u",
+                frame.invuln_stage ? frame.invuln_stage : "unknown",frame.invuln_shader_calls,
+                frame.invuln_stock_binds,frame.invuln_substitutions);
+            log("INFO",message);lastInvulnStage=frame.invuln_stage;
+            nextInvulnDiagnostic=now()+1000;++invulnDiagnosticLogs;
         }
+        DoomNoclipDiagnostic noclipState=frame.noclip_diagnostic;
+        noclipState.raw_keys=noclipState.owned_keys=0;
+        if (noclipDiagnosticLogs<128 && (!noclipDiagnosticLogs ||
+                std::memcmp(&lastNoclipDiagnostic,&noclipState,sizeof(noclipState)))) {
+            const auto &d=frame.noclip_diagnostic;
+            char message[384]{};
+            std::snprintf(message,sizeof(message),
+                "Dooming Light noclip: enabled=%d tracked=%d validation=%d camera=%d saved=%d owner=%d actor=%d input=%d transition=%d ready=%d free=%d captured=%d raw=%u owned=%u",
+                d.enabled,d.tracked,d.validation,d.camera_mode,d.saved,d.owner,d.actor,d.input_mode,d.last_transition,
+                d.input_ready,d.free_camera,d.captured,d.raw_keys,d.owned_keys);
+            log("INFO",message); lastNoclipDiagnostic=noclipState; ++noclipDiagnosticLogs;
+        }
+#if defined(DOOM_MODE_LAB)
         for (unsigned i=0; i<frame.voice_observation_count && i<64; ++i) {
             const auto &v=frame.voice_observations[i];
             char message[224]{};
@@ -876,6 +903,7 @@ struct Runtime {
             lastSplashSequence=0; splashLogCount=0;
 #endif
             doom_engine_reset_damage(engine);
+            doom_engine_sync_powerups(engine);
         }
         if (!frame.alive) player.health = 0;
         if (player.health>0) deathSoundPlayed=false;
@@ -896,8 +924,10 @@ struct Runtime {
             ? playerApi.vehicle_state(playerApi.context,&vehicleRequest,&vehicle) : DLUMA_STATUS_UNAVAILABLE;
         doom_vehicle_feedback_advance(&vehicleFeedback,frameElapsed,vehicleStatus==DLUMA_STATUS_OK,
             vehicle.player_present,vehicle.vehicle_present && vehicle.is_local_driver,vehicleType,vehicle.speed_mps);
+        if (frame.carrying) carryFireLatch=true;
+        else if (carryFireLatch && !frame.fire_held) carryFireLatch=false;
         combatSuspended=doom_vehicle_feedback_blocks_weapons(&vehicleFeedback) ||
-            frame.parkour==2 || frame.interaction_active || handBusy;
+            frame.parkour==2 || frame.interaction_active || handBusy || frame.carrying || carryFireLatch;
         const bool controllerEligible=frame.alive && player.health>0 && !frame.doom_dead &&
             !frame.death_commit && !combatSuspended;
         const DoomGamepadState controller=doom_gamepad_sample(gamepad,controllerEligible,
@@ -954,6 +984,7 @@ struct Runtime {
 #endif
         doom_pickup_feedback_begin_frame(&pickupFeedback, frameElapsed);
         pickupSoundQueued = false;
+        pickupPowerSoundQueued = false;
 #if defined(DOOM_MODE_RUNTIME)
         DoomLootRecord convertedLoot[DOOM_WORLD_MAX_PICKUPS]{};
         unsigned lootCapacity=0;
@@ -1084,7 +1115,7 @@ struct Runtime {
 #endif
         }
         lastTick = timestamp;
-        if (pickupSoundQueued) sound("DSITEMUP");
+        if (pickupSoundQueued && (!pickupPowerSoundQueued || !sound("DSGETPOW"))) sound("DSITEMUP");
         if (combatSuspended || player.weapon != DOOM_CHAINSAW || player.switch_phase == 1 || player.health <= 0)
             stopWeaponSound();
         DoomPlayer renderPlayer{};
@@ -1119,6 +1150,7 @@ struct Runtime {
                     (hand==DOOM_HUD_HAND_VISIBLE && frame.interaction_active && !pickupGesture))) {
                 weaponPixels.fill(0); weaponX=weaponY=0.0f;
             }
+            doom_hud_powerup_visuals(assets.hud.get(),&player,weaponPixels.data(),weaponPixels.size());
             const bool presented=doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),
                 messagePixels.data(), settings.hudFit ? 0.f : settings.hud / 100.f,
                 settings.weaponScale / 100.f,weaponX,weaponY)!=0;

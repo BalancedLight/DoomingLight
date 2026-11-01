@@ -68,6 +68,10 @@ Weapon keys 1–7 select the classic slots; 1 cycles melee weapons and 3 cycles
 the shotgun and super shotgun when available. Native attacks and equipped
 throwables are disabled. Inventory, map, quest and skill-menu hotkeys are also
 disabled during Doom gameplay; Escape opens the pause menu and Mods settings.
+Computer Area Map restores access to the native map for the current level.
+Carried objects use native throw controls; Doom weapons require a fresh fire
+press after the object is thrown or dropped.
+New skill XP is suppressed while the mode is active.
 
 On a controller, right trigger fires and D-pad Left/Right select the previous
 and next weapon. X interacts; jump, parkour, flashlight and the other native
@@ -78,18 +82,23 @@ is used.
 The status bar fits the screen width by default. Its scale and the weapon
 sprite scale are separate. Doom graphics use point filtering by default;
 **Bilinear Doom textures** smooths the HUD, weapons, effects and pickups.
-**Projectile lights** lets plasma and BFG shots illuminate nearby surfaces.
+**Projectile lights** lets plasma and BFG shots illuminate nearby surfaces and adds a brief flash to rocket explosions.
 
 Music settings choose Doom music, Dying Light music, or silence. Default track
-1 selects E1M1 in Doom or MAP01 in Doom II. Doom II uses track numbers 1â€“35;
-Doom also accepts its original `IDMUS` numbers 11â€“45, and settings 1â€“9 select
-E1M1â€“E1M9 while 10 selects E2M1. The `IDMUS` cheat uses the original game
+1 selects E1M1 in Doom or MAP01 in Doom II. Doom II uses track numbers 1–35;
+Doom also accepts its original `IDMUS` numbers 11–45, and settings 1–9 select
+E1M1–E1M9 while 10 selects E2M1. The `IDMUS` cheat uses the original game
 numbering. Select **SoundFont (SF2)** and provide your own
 SF2 file to use different instruments; Classic OPL is used if it cannot be
 loaded. Sound effects include `DSNOWAY`, Doom's failed-interaction sound.
 
 Cheats include `IDDQD`, `IDFA`, `IDKFA`, `IDCHOPPERS`, `IDCLIP` and
-`IDMUSnn`. Doom keycards do not unlock Dying Light quest doors. `IDCLIP` uses
+`IDMUSnn`, plus `IDBEHOLD` followed by V (invulnerability), S (berserk),
+I (partial invisibility), R (radiation suit), A (computer map), or L (light
+amplification). The radiation suit protects against acid and fire. Partial
+invisibility uses native camouflage; light amplification uses a light around
+the camera. Computer Area Map reveals fog visually without changing saved
+exploration. Doom keycards do not unlock Dying Light quest doors. `IDCLIP` uses
 Player's developer fly mode; its HUD and music transitions are being refined.
 
 ## Build

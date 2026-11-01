@@ -11,6 +11,9 @@ typedef struct DoomHud DoomHud;
 /* Compose a transparent 320x200 RGBA image. The WAD must outlive the HUD. */
 DoomHud *doom_hud_create(const DoomWad *wad);
 void doom_hud_destroy(DoomHud *hud);
+/* Apply after composing the weapon or reaching hand; status text stays intact. */
+void doom_hud_powerup_visuals(const DoomHud *hud, const DoomPlayer *player,
+                              uint8_t *rgba, size_t size);
 /* Call once per 35 Hz gameplay tic with horizontal speed in metres/second.
  * Reset when the map, player, or movement sample changes. */
 void doom_hud_bob_tick(DoomHud *hud, float horizontal_speed_mps);

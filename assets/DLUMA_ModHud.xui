@@ -55,5 +55,16 @@
                 <Show>false</Show>
             </Properties>
         </IUIAARectangle>
+        <IUIAARectangle>
+            <Properties>
+                <Id>I_DLUMADot</Id>
+                <Width>12.000000</Width>
+                <Height>12.000000</Height>
+                <Position>634.000000,354.000000,0.000000</Position>
+                <ImagePath>crosshair_dot</ImagePath>
+                <ClassOverride>IUIImage</ClassOverride>
+                <Show>false</Show>
+            </Properties>
+        </IUIAARectangle>
     </XuiScene>
 </XuiCanvas>

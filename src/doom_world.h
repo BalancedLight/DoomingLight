@@ -165,6 +165,8 @@ extern "C"
                                       float player_height, const DoomWorldHost *host,
                                       DoomPickupFn pickup, void *context);
     const char *doom_world_pickup_sprite(DoomDrop kind);
+    /* The age is measured in Doom's 35 Hz tics. */
+    const char *doom_world_pickup_sprite_at(DoomDrop kind, unsigned age);
     const char *doom_world_projectile_sprite(const DoomProjectile *projectile);
     const char *doom_world_bfg_hit_sprite(const DoomBfgHitFx *effect);
 #ifdef __cplusplus

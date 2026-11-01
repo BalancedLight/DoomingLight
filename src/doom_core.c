@@ -224,6 +224,7 @@ static void fire_weapon(DoomPlayer *p, DoomEventFn emit, void *ctx)
             value = (w == DOOM_FIST || w == DOOM_CHAINSAW)
                         ? ((random_table[p->random_index] % 10) + 1) * 2
                         : ((random_table[p->random_index] % 3) + 1) * damage;
+            if (w == DOOM_FIST && doom_power_active(p, DOOM_POWER_BERSERK)) value *= 10;
             if (spread)
             {
                 int first, second;
@@ -285,6 +286,9 @@ static void tick(DoomPlayer *p, int fire, DoomEventFn emit, void *ctx)
     }
     if (p->invulnerability_tics)
         --p->invulnerability_tics;
+    if (p->power_tics[DOOM_POWER_INVISIBILITY]) --p->power_tics[DOOM_POWER_INVISIBILITY];
+    if (p->power_tics[DOOM_POWER_RADIATION_SUIT]) --p->power_tics[DOOM_POWER_RADIATION_SUIT];
+    if (p->power_tics[DOOM_POWER_LIGHT_AMP]) --p->power_tics[DOOM_POWER_LIGHT_AMP];
     update_flash(p);
     p->face_random = (p->face_random + 1u) & 255u;
     if (fire) {
@@ -508,6 +512,34 @@ int doom_damage(DoomPlayer *p, int damage)
 {
     return doom_damage_from(p, damage, 0);
 }
+int doom_power_active(const DoomPlayer *p, DoomPower power)
+{
+    if (!p || power < 0 || power >= DOOM_POWER_COUNT) return 0;
+    return power == DOOM_POWER_INVULNERABILITY ? p->invulnerability_tics != 0 : p->power_tics[power] != 0;
+}
+int doom_power_give(DoomPlayer *p, DoomPower power)
+{
+    if (!p || p->health <= 0 || power < 0 || power >= DOOM_POWER_COUNT) return 0;
+    switch (power) {
+    case DOOM_POWER_INVULNERABILITY: p->invulnerability_tics = 30u * 35u; break;
+    case DOOM_POWER_INVISIBILITY: p->power_tics[power] = 60u * 35u; break;
+    case DOOM_POWER_RADIATION_SUIT: p->power_tics[power] = 60u * 35u; break;
+    case DOOM_POWER_LIGHT_AMP: p->power_tics[power] = 120u * 35u; break;
+    case DOOM_POWER_BERSERK:
+        if (p->health < 100) p->health = 100;
+        p->power_tics[power] = 1; break;
+    case DOOM_POWER_AUTOMAP:
+        if (p->power_tics[power]) return 0;
+        p->power_tics[power] = 1; break;
+    default: return 0;
+    }
+    return 1;
+}
+int doom_environment_protected(const DoomPlayer *p, DoomEnvironmentDamageKind kind)
+{
+    return (kind == DOOM_ENVIRONMENT_ACID || kind == DOOM_ENVIRONMENT_FIRE) &&
+        doom_power_active(p, DOOM_POWER_RADIATION_SUIT);
+}
 unsigned doom_damage_palette(const DoomPlayer *p)
 {
     unsigned count;
@@ -522,11 +554,13 @@ static const char cheat_ammo_keys[] = "IDKFA";
 static const char cheat_choppers[] = "IDCHOPPERS";
 static const char cheat_noclip[] = "IDCLIP";
 static const char cheat_music[] = "IDMUS";
+static const char cheat_behold[] = "IDBEHOLD";
 
 int doom_cheat_is_prefix(const char *candidate, unsigned length)
 {
     static const char *const sequences[] = {
-        cheat_god, cheat_ammo, cheat_ammo_keys, cheat_choppers, cheat_noclip
+        cheat_god, cheat_ammo, cheat_ammo_keys, cheat_choppers, cheat_noclip,
+        "IDBEHOLDV", "IDBEHOLDS", "IDBEHOLDI", "IDBEHOLDR", "IDBEHOLDA", "IDBEHOLDL"
     };
     unsigned i, j;
     if (!candidate || !length || length > sizeof(cheat_choppers) - 1u)
@@ -566,17 +600,35 @@ void doom_cheat_char(DoomPlayer *p, char ch, DoomEventFn emit, void *ctx)
 {
     unsigned i;
     int code = 0;
-    int music_digit_pending;
+    int music_digit_pending, behold_pending;
     if (!p || !isalnum((unsigned char)ch))
         return;
     ch = (char)toupper((unsigned char)ch);
     music_digit_pending = doom_cheat_wants_music_digit(p) && !ends(p, cheat_music);
+    behold_pending = ends(p, cheat_behold);
     if (p->cheat_len == sizeof(p->cheat) - 1)
     {
         memmove(p->cheat, p->cheat + 1, --p->cheat_len);
     }
     p->cheat[p->cheat_len++] = ch;
     p->cheat[p->cheat_len] = 0;
+    if (behold_pending && strchr("VSIRAL", ch))
+    {
+        const char *keys = "VSIRAL";
+        DoomPower power = (DoomPower)(strchr(keys, ch) - keys);
+        if (!doom_power_active(p, power)) (void)doom_power_give(p, power);
+        else if (power == DOOM_POWER_INVULNERABILITY) p->invulnerability_tics = 1;
+        else if (power == DOOM_POWER_BERSERK || power == DOOM_POWER_AUTOMAP) p->power_tics[power] = 0;
+        else p->power_tics[power] = 1;
+        send(emit, ctx, DOOM_EVENT_CHEAT, DOOM_CHEAT_BEHOLD_POWER, power, 0, 0, 0);
+        p->cheat_len = 0;
+        return;
+    }
+    if (ends(p, cheat_behold))
+    {
+        send(emit, ctx, DOOM_EVENT_CHEAT, DOOM_CHEAT_BEHOLD_MENU, p->weapon, 0, 0, 0);
+        return;
+    }
     if (ends(p, cheat_god))
     {
         p->god = !p->god;
@@ -633,6 +685,8 @@ DoomDrop doom_enemy_killed(DoomPlayer *p)
         return DOOM_DROP_GREEN_ARMOR;
     if (p->kills % 5 == 0 && p->health < 100)
         return DOOM_DROP_MEDIKIT;
+    if (p->kills % 11 == 0)
+        return (DoomDrop)(DOOM_DROP_INVULNERABILITY + (p->kills / 11u - 1u) % DOOM_POWER_COUNT);
     for (i = 1; i < 4; i++)
         if (p->ammo[i] * p->max_ammo[best] < p->ammo[best] * p->max_ammo[i])
             best = i;
@@ -641,8 +695,14 @@ DoomDrop doom_enemy_killed(DoomPlayer *p)
 int doom_collect(DoomPlayer *p, DoomDrop drop)
 {
     int n;
-    if (!p || drop < DOOM_DROP_BULLETS || drop > DOOM_DROP_GREEN_ARMOR)
+    if (!p || drop < DOOM_DROP_BULLETS || drop >= DOOM_DROP_COUNT)
         return 0;
+    if (drop >= DOOM_DROP_INVULNERABILITY) {
+        DoomPower power = (DoomPower)(drop - DOOM_DROP_INVULNERABILITY);
+        if (!doom_power_give(p, power)) return 0;
+        if (power == DOOM_POWER_BERSERK) doom_select_weapon(p, DOOM_FIST);
+        return 1;
+    }
     if (drop <= DOOM_DROP_CELLS)
     {
         n = (int)drop;

@@ -82,7 +82,8 @@ is used.
 The status bar fits the screen width by default. Its scale and the weapon
 sprite scale are separate. Doom graphics use point filtering by default;
 **Bilinear Doom textures** smooths the HUD, weapons, effects and pickups.
-**Projectile lights** lets plasma and BFG shots illuminate nearby surfaces and adds a brief flash to rocket explosions.
+**Projectile lights** illuminates plasma and BFG shots and their impacts,
+BFG tracer bursts, and rocket explosions.
 
 Music settings choose Doom music, Dying Light music, or silence. Default track
 1 selects E1M1 in Doom or MAP01 in Doom II. Doom II uses track numbers 1–35;
@@ -99,7 +100,8 @@ amplification). The radiation suit protects against acid and fire. Partial
 invisibility uses native camouflage; light amplification uses a light around
 the camera. Computer Area Map reveals fog visually without changing saved
 exploration. Doom keycards do not unlock Dying Light quest doors. `IDCLIP` uses
-Player's developer fly mode; its HUD and music transitions are being refined.
+Player's developer fly mode. Doom weapons are unavailable while flying;
+normal parkour controls remain available after leaving noclip.
 
 ## Build
 

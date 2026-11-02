@@ -30,6 +30,9 @@ void doom_noclip_set_cheats_enabled(int enabled);
 void doom_noclip_diagnostic(DoomNoclipDiagnostic *out);
 /* True once after a player is recreated by an observed Y/IDCLIP transition. */
 int doom_noclip_take_returned(void);
+/* Return owned flight before removing hooks, inside the validated level scope. */
+int doom_noclip_stop_in_level(void *level, uint32_t generation);
+/* Remove hooks without issuing world calls from an unscoped shutdown. */
 int doom_noclip_stop(void);
 
 #ifdef __cplusplus

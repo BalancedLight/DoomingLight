@@ -57,17 +57,24 @@ runtime log.
 Each map and respawn starts with 100 health, no armor, all available weapons,
 and full standard ammunition. Doom II adds the super shotgun. Doom inventory
 is separate from Dying Light's inventory. Supply drops appear after hostile
-kills; pickup text appears at the top left. Supported weapon, ammunition and medkit pickups
-convert into Doom supplies. Excess converted supplies remain as Doom pickups.
-Some native pickup paths and ordinary ground-item visuals are not yet replaced. Quest items,
-crafting materials, cash and unrecognized items retain their normal behavior.
-Some native container capacity checks still apply before conversion.
+kills; pickup text appears at the top left. Supported weapon, ammunition,
+medkit, crafting-part and cash pickups also give Doom supplies. Their native
+inventory records remain available for quests. Excess Doom supplies remain
+as Doom pickups. Some native pickup paths and ordinary ground-item visuals
+are not yet replaced, and native capacity checks still apply. Special quest
+items and unrecognized items retain their normal behavior.
+
+Native collectibles display a centered gold “A secret is revealed!” notice and
+play the included secret cue. **Secret sound file** accepts a local PCM16 WAV
+to override that sound. After one second of continuous
+falling, Doomguy holds the OUCH face until the fall ends.
 
 Left mouse and the configurable extra fire key (Left Ctrl by default) fire.
 Weapon keys 1–7 select the classic slots; 1 cycles melee weapons and 3 cycles
 the shotgun and super shotgun when available. Native attacks and equipped
 throwables are disabled. Inventory, map, quest and skill-menu hotkeys are also
-disabled during Doom gameplay; Escape opens the pause menu and Mods settings.
+disabled during Doom gameplay; Escape opens the pause menu. Configure the mod
+through Mods on the main menu.
 Computer Area Map restores access to the native map for the current level.
 Carried objects use native throw controls; Doom weapons require a fresh fire
 press after the object is thrown or dropped.
@@ -87,10 +94,11 @@ is used.
 The status bar fits the screen width by default. Its scale and the weapon
 sprite scale are separate. Doom graphics use point filtering by default;
 **Bilinear Doom textures** smooths the HUD, weapons, effects and pickups.
-**Projectile lights** illuminates plasma and BFG shots and their impacts,
-BFG tracer bursts, and rocket explosions.
+**Projectile lights** illuminates weapon flashes, plasma and BFG shots and
+their impacts, BFG tracer bursts, and rocket explosions.
 
-Music settings choose Doom music, Dying Light music, or silence. Default track
+Music settings choose Doom music, Dying Light music, or silence. **Random map
+music** picks a track from available Doom and Doom II WADs on each map. Default track
 1 selects E1M1 in Doom or MAP01 in Doom II. Doom II uses track numbers 1–35;
 Doom also accepts its original `IDMUS` numbers 11–45, and settings 1–9 select
 E1M1–E1M9 while 10 selects E2M1. The `IDMUS` cheat uses the original game
@@ -102,8 +110,8 @@ Cheats include `IDDQD`, `IDFA`, `IDKFA`, `IDCHOPPERS`, `IDCLIP` and
 `IDMUSnn`, plus `IDBEHOLD` followed by V (invulnerability), S (berserk),
 I (partial invisibility), R (radiation suit), A (computer map), or L (light
 amplification). The radiation suit protects against acid and fire. Partial
-invisibility uses native camouflage; light amplification uses a light around
-the camera. Computer Area Map reveals fog visually without changing saved
+invisibility uses native camouflage; light amplification brightens the world
+and blinks near expiry. Computer Area Map reveals fog visually without changing saved
 exploration. Doom keycards do not unlock Dying Light quest doors. `IDCLIP` uses
 Player's developer fly mode. Doom weapons are unavailable while flying;
 normal parkour controls remain available after leaving noclip.
@@ -135,6 +143,7 @@ synthesis. See `THIRD_PARTY_NOTICES.md` and the included licenses.
 Doom graphics, sounds and music are loaded from the user's local IWAD.
 SoundFont music uses the separately selected SF2 file. The distribution
 contains no Doom game data or SoundFonts.
+The secret notification cue is original audio supplied for this mod by its maintainer.
 
 ## Disclaimer
 Some additions to this application were created with assistance from AI

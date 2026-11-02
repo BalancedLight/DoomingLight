@@ -27,7 +27,6 @@ using FindScreen = void *(__fastcall *)(void *, int);
 unsigned char *game=nullptr;
 void *owned_level=nullptr;
 uint32_t owned_generation=0;
-DWORD owner_thread=0;
 std::recursive_mutex state_mutex;
 DisplayMessage original_display=nullptr;
 SelectRow original_select=nullptr;
@@ -270,7 +269,7 @@ extern "C" int doom_chat_start(void *module, void *engine_module, void *level, u
         if (MH_CreateHook(base+0x4fbe00,reinterpret_cast<void *>(&select_hook),reinterpret_cast<void **>(&original_select))!=MH_OK) return 0;
         select_created=true;
     }
-    owned_level=level; owned_generation=generation; owner_thread=GetCurrentThreadId();
+    owned_level=level; owned_generation=generation;
     presentation_ready.store(false,std::memory_order_release);
     queue_epoch.fetch_add(1,std::memory_order_acq_rel);
     enabled.store(true,std::memory_order_release);
@@ -290,15 +289,11 @@ extern "C" void doom_chat_poll(DoomChatSnapshot *out) {
     std::lock_guard<std::recursive_mutex> guard(state_mutex);
     if (!out) return;
     *out={};
-    out->owner_thread=owner_thread;
-    out->polling_thread=GetCurrentThreadId();
     NativeChat state{};
     if (!native_chat(&state)) {
-        out->validation=2;
         native_presentation(false);
         return;
     }
-    out->validation=state.open ? 4 : 3;
     out->available=1; out->open=state.open; out->channel=static_cast<int>(state.channel);
     wchar_t draft[251]{};
     if (out->open && copy_wide(reinterpret_cast<WideString *>(static_cast<unsigned char *>(state.edit)+160),draft,251))

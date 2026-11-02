@@ -190,7 +190,8 @@ extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level
         if(!s->handle) { trace_failure("Doom world: emitter creation failed\n"); __leave; }
         if (flags & (DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG |
                      DOOM_WORLD_SPRITE_LIGHT_ROCKET_FLASH | DOOM_WORLD_SPRITE_LIGHT_PLASMA_FLASH |
-                     DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH | DOOM_WORLD_SPRITE_LIGHT_BFG_TRACER)) {
+                     DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH | DOOM_WORLD_SPRITE_LIGHT_BFG_TRACER |
+                     DOOM_WORLD_SPRITE_LIGHT_ROCKET)) {
             if (!r->light_attempted) {
                 r->light_attempted=true;
                 r->lights=doom_world_lights_create(r->base,r->level,r->generation);
@@ -199,7 +200,8 @@ extern "C" uint32_t doom_world_renderer_add(DoomWorldRenderer *owner,void *level
                              (flags & DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH) ? DOOM_WORLD_LIGHT_BFG_FLASH :
                              (flags & DOOM_WORLD_SPRITE_LIGHT_PLASMA_FLASH) ? DOOM_WORLD_LIGHT_PLASMA_FLASH :
                              (flags & DOOM_WORLD_SPRITE_LIGHT_ROCKET_FLASH) ? DOOM_WORLD_LIGHT_ROCKET_FLASH :
-                             (flags & DOOM_WORLD_SPRITE_LIGHT_BFG) ? DOOM_WORLD_LIGHT_BFG : DOOM_WORLD_LIGHT_PLASMA;
+                             (flags & DOOM_WORLD_SPRITE_LIGHT_BFG) ? DOOM_WORLD_LIGHT_BFG :
+                             (flags & DOOM_WORLD_SPRITE_LIGHT_ROCKET) ? DOOM_WORLD_LIGHT_ROCKET : DOOM_WORLD_LIGHT_PLASMA;
             if (r->lights) s->light=doom_world_lights_add(r->lights,r->level,r->generation,position,kind);
         }
         trace_failure("Doom world: sprite created\n");

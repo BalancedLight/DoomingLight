@@ -421,6 +421,49 @@ static void chat_text(DoomHud *hud, HudCanvas *canvas, const char *text, int y)
         x+=width;
     }
 }
+int doom_hud_render_secret(DoomHud *hud, uint8_t *rgba, size_t size, const char *text)
+{
+    const unsigned char *p;
+    HudCanvas canvas={rgba,16,0};
+    int width=0, x;
+    size_t i;
+    if (!rgba || size<320u*16u*4u) return 0;
+    memset(rgba,0,320u*16u*4u);
+    if (!text || !*text) return 1;
+    if (!hud) return 0;
+    p=(const unsigned char *)text;
+    while (*p && *p!='\n') {
+        unsigned ch=chat_character(&p);
+        int next=chat_width(hud,ch);
+        if (width+next>320) break;
+        width+=next;
+    }
+    x=(320-width)/2;
+    p=(const unsigned char *)text;
+    while (*p && *p!='\n') {
+        unsigned ch=chat_character(&p);
+        int next=chat_width(hud,ch);
+        char name[9];
+        if (x+next>(320+width)/2) break;
+        if (ch>=33 && ch<=95) {
+            snprintf(name,sizeof(name),"STCFN%03u",ch);
+            draw(hud,&canvas,name,x,0,0);
+        }
+        x+=next;
+    }
+    for (i=0;i<320u*16u;++i) {
+        uint8_t *pixel=rgba+i*4u;
+        unsigned value=pixel[0];
+        if (pixel[1]>value) value=pixel[1];
+        if (pixel[2]>value) value=pixel[2];
+        if (pixel[3]) {
+            pixel[0]=(uint8_t)value;
+            pixel[1]=(uint8_t)(value*190u/255u);
+            pixel[2]=(uint8_t)(value*48u/255u);
+        }
+    }
+    return 1;
+}
 int doom_hud_render_chat(DoomHud *hud, uint8_t *message, size_t size,
                           const DoomChatSnapshot *chat, int preserve_notice)
 {

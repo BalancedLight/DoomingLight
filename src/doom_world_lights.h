@@ -12,7 +12,11 @@ typedef enum DoomWorldLightKind {
     DOOM_WORLD_LIGHT_AMP,
     DOOM_WORLD_LIGHT_PLASMA_FLASH,
     DOOM_WORLD_LIGHT_BFG_FLASH,
-    DOOM_WORLD_LIGHT_BFG_TRACER
+    DOOM_WORLD_LIGHT_BFG_TRACER,
+    DOOM_WORLD_LIGHT_MUZZLE_AMBER,
+    DOOM_WORLD_LIGHT_MUZZLE_PLASMA,
+    DOOM_WORLD_LIGHT_MUZZLE_BFG,
+    DOOM_WORLD_LIGHT_ROCKET
 } DoomWorldLightKind;
 DoomWorldLights *doom_world_lights_create(void *module, void *level, uint32_t generation);
 uint32_t doom_world_lights_add(DoomWorldLights *lights, void *level, uint32_t generation,

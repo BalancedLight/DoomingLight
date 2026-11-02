@@ -220,6 +220,7 @@ def main() -> int:
         shutil.copyfile(ROOT / "third_party/minhook/LICENSE.txt", destination / "LICENSE.MINHOOK.txt")
         shutil.copyfile(ROOT / "third_party/tsf/LICENSE", destination / "LICENSE.TSF.txt")
         shutil.copyfile(module, destination / "DoomMode.dll")
+        shutil.copyfile(ROOT / "assets/audio/dssecret.wav", destination / "dssecret.wav")
         manifest = json.loads((destination / "mod.dluma.json").read_text(encoding="utf-8"))
         if args.lab:
             manifest.update(id="doom.mode.lab", version="0.1.0-lab")
@@ -233,7 +234,8 @@ def main() -> int:
                 for item in sorted((ROOT / directory).rglob("*")):
                     if (item.is_file() and "__pycache__" not in item.parts
                             and (item.suffix.lower() in {".c", ".cpp", ".h", ".py", ".bat", ".json", ".md", ".txt", ".sha256", ".xui"}
-                                 or item.name in {"LICENSE", "NOTICE", "COPYING"})
+                                 or item.name in {"LICENSE", "NOTICE", "COPYING"}
+                                 or item.relative_to(ROOT) == Path("assets/audio/dssecret.wav"))
                             and item.name not in {".dlw-workshop.json", ".dlw-workshopignore"}):
                         archive.write(item, item.relative_to(ROOT))
             for name in ("LICENSE", "LICENSE.DLUMA", "THIRD_PARTY_NOTICES.md", "README.md", "build_doom_mode_msvc.bat"):

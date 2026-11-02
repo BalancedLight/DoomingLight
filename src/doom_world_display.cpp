@@ -14,7 +14,8 @@ constexpr unsigned MaxSprites = PickupOffset + DOOM_WORLD_MAX_PICKUPS;
 constexpr unsigned MaxImages = 64, MaxNativeSprites = 64;
 constexpr unsigned LightMask = DOOM_WORLD_SPRITE_LIGHT_PLASMA | DOOM_WORLD_SPRITE_LIGHT_BFG |
     DOOM_WORLD_SPRITE_LIGHT_ROCKET_FLASH | DOOM_WORLD_SPRITE_LIGHT_PLASMA_FLASH |
-    DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH | DOOM_WORLD_SPRITE_LIGHT_BFG_TRACER;
+    DOOM_WORLD_SPRITE_LIGHT_BFG_FLASH | DOOM_WORLD_SPRITE_LIGHT_BFG_TRACER |
+    DOOM_WORLD_SPRITE_LIGHT_ROCKET;
 struct Image {
     char name[9]{};
     uint8_t *pixels = nullptr;
@@ -43,6 +44,8 @@ Wanted desired(const DoomWorld *world, unsigned index, const DoomVec3 *viewer) {
         w.name = doom_world_projectile_sprite(&p); w.position = p.position; w.age = p.age;
         if (w.name) {
             w.flags = DOOM_WORLD_SPRITE_FULLBRIGHT;
+            if (p.state == DOOM_PROJECTILE_FLYING && p.weapon == DOOM_ROCKET)
+                w.flags |= DOOM_WORLD_SPRITE_LIGHT_ROCKET;
             if (p.state == DOOM_PROJECTILE_FLYING && p.weapon == DOOM_PLASMA)
                 w.flags |= DOOM_WORLD_SPRITE_LIGHT_PLASMA;
             if (p.state == DOOM_PROJECTILE_FLYING && p.weapon == DOOM_BFG)

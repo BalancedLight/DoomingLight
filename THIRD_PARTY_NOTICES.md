@@ -22,3 +22,6 @@ See LICENSE and the notices in the source files.
 
 Doom graphics, sound effects, instruments and music are read from the user's
 IWAD. They are not included in this distribution.
+
+The included secret notification cue is original audio created and supplied
+for Dooming Light by its maintainer.

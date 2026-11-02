@@ -27,7 +27,6 @@ std::atomic<int> last_transition{0};
 std::atomic<unsigned> raw_key_calls{0}, owned_key_calls{0};
 std::atomic<void *> expected_level{nullptr}, expected_session{nullptr}, expected_client{nullptr};
 std::atomic<uint32_t> expected_generation{0};
-DWORD game_thread=0;
 unsigned char *game = nullptr;
 GetLevel get_level = nullptr;
 InputKey original = nullptr;
@@ -226,7 +225,7 @@ extern "C" int doom_noclip_start(void *game_module, void *engine_module, void *l
         HMODULE self=nullptr;
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
                                 reinterpret_cast<LPCWSTR>(&input_hook),&self)) return 0;
-        game=base; game_thread=GetCurrentThreadId();
+        game=base;
         get_level=get; original=reinterpret_cast<InputKey>(base+0x40c2f0);
         original_free_camera=reinterpret_cast<InputKey>(base+0x11441f0);
         original_free_mouse=reinterpret_cast<InputMouseButton>(base+0x1148710);
@@ -334,11 +333,13 @@ extern "C" int doom_noclip_take_returned(void) {
     return returned.exchange(false,std::memory_order_acq_rel) ? 1 : 0;
 }
 
-extern "C" int doom_noclip_stop(void) {
+static int stop_in_level(void *level, uint32_t generation) {
     bool success=true;
     Snapshot before{},after{};
     __try {
-        if (GetCurrentThreadId()==game_thread && flying.load(std::memory_order_acquire) &&
+        if (level && generation && expected_level.load(std::memory_order_acquire)==level &&
+            expected_generation.load(std::memory_order_acquire)==generation &&
+            flying.load(std::memory_order_acquire) &&
             current(&before) && before.flying) {
             EngineString empty{};
             reinterpret_cast<Toggle>(game+0x40c1b0)(before.client,&empty);
@@ -365,6 +366,10 @@ extern "C" int doom_noclip_stop(void) {
     }
     return success ? 1 : 0;
 }
+extern "C" int doom_noclip_stop_in_level(void *level, uint32_t generation) {
+    return stop_in_level(level,generation);
+}
+extern "C" int doom_noclip_stop(void) { return stop_in_level(nullptr,0); }
 #else
 extern "C" int doom_noclip_start(void *, void *, void *, uint32_t, int) { return 0; }
 extern "C" int doom_noclip_toggle(void) { return 0; }
@@ -375,5 +380,6 @@ extern "C" void doom_noclip_diagnostic(DoomNoclipDiagnostic *out) {
     if (out) { *out={}; out->validation=1; out->camera_mode=out->saved=out->owner=out->actor=out->input_mode=out->captured=-1; }
 }
 extern "C" int doom_noclip_take_returned(void) { return 0; }
+extern "C" int doom_noclip_stop_in_level(void *, uint32_t) { return 1; }
 extern "C" int doom_noclip_stop(void) { return 1; }
 #endif

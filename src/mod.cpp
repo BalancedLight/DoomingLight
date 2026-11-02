@@ -6,14 +6,17 @@
 #include "doom_gamepad.h"
 #include "doom_hud.h"
 #include "doom_music.h"
+#include "doom_music_selection.h"
 #include "doom_movement.h"
 #include "doom_pickup_feedback.h"
 #include "doom_synth.h"
+#include "doom_sound_file.h"
 #include "doom_wad.h"
 #include "doom_world_display.h"
 #include "doom_world_runtime.h"
 #include "doom_vehicle_feedback.h"
 #include "wad_discovery.h"
+#include <windows.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -27,11 +30,30 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
 namespace {
 constexpr uint64_t UpdateCallback = 1, ConfigCallback = 2;
+std::string bundledSecretSound() {
+    HMODULE module=nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&bundledSecretSound),&module)) return {};
+    std::wstring path(32768,L'\0');
+    const DWORD length=GetModuleFileNameW(module,path.data(),static_cast<DWORD>(path.size()));
+    if (!length || length>=path.size()) return {};
+    path.resize(length);
+    if (path.compare(0,4,L"\\\\?\\")==0) path.erase(0,4);
+    const auto slash=path.find_last_of(L"/\\");
+    if (slash==std::wstring::npos) return {};
+    path.resize(slash+1); path+=L"dssecret.wav";
+    const int bytes=WideCharToMultiByte(CP_UTF8,0,path.c_str(),-1,nullptr,0,nullptr,nullptr);
+    if (bytes<=1) return {};
+    std::string result(static_cast<size_t>(bytes),'\0');
+    if (!WideCharToMultiByte(CP_UTF8,0,path.c_str(),-1,result.data(),bytes,nullptr,nullptr)) return {};
+    result.pop_back(); return result;
+}
 DlumaStringView view(const char* value) { return {value, std::strlen(value)}; }
 template<class T> T record() {
     T value{};
@@ -75,20 +97,47 @@ public:
 };
 struct Assets {
     WadPtr wad;
+    WadPtr otherMusicWad;
     HudPtr hud;
+    std::vector<DoomMusicChoice> musicChoices;
 };
+void collectMusicChoices(Assets& assets) {
+    DoomWad* wads[] = {assets.wad.get(), assets.otherMusicWad.get()};
+    for (DoomWad* wad : wads) {
+        DoomLump bank{};
+        if (!wad || !doom_wad_lump(wad, "GENMIDI", &bank) ||
+            !bank.size || bank.size > 65536u) continue;
+        const bool doom2 = doom_wad_is_doom2(wad) != 0;
+        for (unsigned code = 1; code <= 45; ++code) {
+            char name[9]{};
+            DoomLump score{};
+            if (doom_music_lump_name(doom2, code, name) &&
+                doom_wad_lump(wad, name, &score) && score.size &&
+                score.size <= 4u * 1024u * 1024u)
+                assets.musicChoices.push_back({code, doom2});
+        }
+    }
+}
 struct PreparedMusic {
     std::unique_ptr<int16_t, PcmDeleter> pcm;
     size_t frames = 0;
     unsigned track = 0;
+    bool doom2 = false;
     uint64_t epoch = 0;
     bool soundfontFallback = false;
     bool soundfontUsed = false;
 };
+struct PreparedEffect {
+    std::unique_ptr<int16_t, PcmDeleter> pcm;
+    uint32_t rate = 0, count = 0;
+    std::string path;
+};
 struct Settings {
     std::string game = "auto", doom, doom2, music = "doom", musicSynth = "opl", soundfont;
     std::string controllerFire = "right", controllerCycle = "normal";
+    std::string secretSound;
     bool classic = false, cheats = true, hudFit = true, bilinear = false, dynamicLights = true;
+    bool randomMusic = false;
     int track = 1, hud = 100, weaponScale = 100, incoming = 100, outgoing = 100;
     int musicVolume = 70, effectsVolume = 100;
 };
@@ -101,7 +150,7 @@ struct Runtime {
     DlumaAudioV1 media{};
     DlumaPlayerV1 playerApi{};
     DoomMovement movement{};
-    Settings settings;
+    Settings settings, mapAssetSettings;
     DoomPlayer player{};
     DoomEngine* engine = nullptr;
     DoomAudio* audio = nullptr;
@@ -109,12 +158,17 @@ struct Runtime {
     Assets assets;
     std::future<Assets> loading;
     std::future<PreparedMusic> rendering;
+    std::future<PreparedEffect> secretLoading;
+    PreparedEffect secretEffect;
+    std::string secretRequested, bundledSecret;
     PreparedMusic pendingMusic;
     std::shared_ptr<std::atomic<bool>> cancelRender;
     std::array<uint8_t, 320 * 200 * 4> weaponPixels{};
     std::array<uint8_t, 320 * 32 * 4> statusPixels{};
     std::array<uint8_t, 320 * 64 * 4> messagePixels{};
+    std::array<uint8_t, 320 * 16 * 4> secretPixels{};
     DoomPickupFeedback pickupFeedback{};
+    DoomMessages secretMessages{};
     DoomVehicleFeedback vehicleFeedback{};
     bool pickupSoundQueued = false, pickupPowerSoundQueued = false;
     bool combatSuspended = false, handBusy = false, weaponReturning = false, carryFireLatch = false;
@@ -127,6 +181,10 @@ struct Runtime {
     uint64_t lastTick = 0, retryMusicAt = 0;
     uint64_t musicEpoch = 0;
     uint64_t motionSampleAt = 0;
+    uint64_t fallSampleAt = 0;
+    uint64_t fallActor = 0;
+    unsigned fallingMs = 0;
+    float fallSampleY = 0.0f;
     unsigned lastDamageSequence = 0;
     float motionX = 0.0f, motionZ = 0.0f, lastMotionSpeed = 0.0f;
     DoomNoclipDiagnostic lastNoclipDiagnostic{};
@@ -162,14 +220,17 @@ struct Runtime {
 #endif
     uint32_t generation = 0;
     unsigned requestedTrack = 0, playingTrack = 0, resumeTrack = 0;
+    bool requestedDoom2 = false, playingDoom2 = false, resumeDoom2 = false;
+    bool randomMusicForMap = false, mapMusicSelected = false;
+    DoomMusicChoice mapMusic{}, previousRandomMusic{};
+    std::mt19937 musicRandom{static_cast<std::mt19937::result_type>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count())};
     bool scope = false, active = false, started = false, haveGeneration = false;
     bool resetCheatInput = false;
     bool reloadAssets = false, musicPlaying = false, musicOverride = false, requestOverride = false;
     bool bindingWarning = false;
     bool assetsReadyForActivation = false;
     uint64_t retryActivationAt = 0;
-    std::array<int,8> previousChatState{};
-    unsigned chatDiagnosticCount=0;
 
     template<class T> bool service(const char* id, T& output) {
         output = {};
@@ -214,6 +275,7 @@ struct Runtime {
     }
     void configuration() {
         const std::string oldMusic = settings.music;
+        const std::string oldSecret = settings.secretSound;
         const std::string oldSynth = settings.musicSynth, oldFont = settings.soundfont;
         const std::string oldControllerFire=settings.controllerFire;
         const bool oldCheats = settings.cheats;
@@ -222,6 +284,8 @@ struct Runtime {
         settings.music = text("music", "doom");
         settings.musicSynth = text("music_synth", "opl");
         settings.soundfont = text("soundfont", "");
+        settings.secretSound = text("secret_sound_file", "");
+        if (oldSecret!=settings.secretSound) secretEffect={};
         settings.controllerFire = text("controller_fire", "right");
         settings.controllerCycle = text("controller_cycle", "normal");
         if(oldControllerFire!=settings.controllerFire) doom_gamepad_reset(gamepad);
@@ -229,6 +293,7 @@ struct Runtime {
         settings.cheats = integer("cheats", 1, 0, 1) != 0;
         if (oldCheats!=settings.cheats) resetCheatInput=true;
         settings.track = integer("default_track", 1, 1, 45);
+        settings.randomMusic = integer("random_map_music", 0, 0, 1) != 0;
         settings.hud = integer("hud_scale", 100, 50, 200);
         settings.hudFit = integer("hud_fit_screen", 1, 0, 1) != 0;
         settings.weaponScale = integer("weapon_scale", 100, 50, 200);
@@ -249,17 +314,48 @@ struct Runtime {
         if (oldMusic != settings.music) {
             musicOverride = false;
             stopMusic();
-            if (active && settings.music == "doom") requestMusic(defaultTrack());
+            if (active && settings.music == "doom") requestMapMusic();
         } else if ((oldSynth!=settings.musicSynth || oldFont!=settings.soundfont) && active &&
                    (settings.music=="doom" || musicOverride || requestOverride)) {
             ++musicEpoch;
             if (cancelRender) cancelRender->store(true);
             pendingMusic={};
-            requestMusic(requestedTrack ? requestedTrack : defaultTrack(),musicOverride || requestOverride);
+            if (requestedTrack)
+                requestMusic(requestedTrack, musicOverride || requestOverride, requestedDoom2);
+            else
+                requestMapMusic();
         }
+        prepareSecretSound();
     }
     unsigned defaultTrack() const {
         return doom_music_setting_code(player.doom2, static_cast<unsigned>(settings.track));
+    }
+    DoomWad* musicWad(bool doom2) const {
+        if (assets.wad && (doom_wad_is_doom2(assets.wad.get()) != 0) == doom2)
+            return assets.wad.get();
+        if (assets.otherMusicWad &&
+            (doom_wad_is_doom2(assets.otherMusicWad.get()) != 0) == doom2)
+            return assets.otherMusicWad.get();
+        return nullptr;
+    }
+    void chooseMapMusic() {
+        if (mapMusicSelected) return;
+        mapMusic = {defaultTrack(), player.doom2 != 0};
+        if (randomMusicForMap) {
+            const auto& choices = assets.musicChoices;
+            const size_t count = doom_music_eligible_count(
+                choices.data(), choices.size(), previousRandomMusic);
+            if (count) {
+                std::uniform_int_distribution<size_t> distribution(0, count - 1);
+                mapMusic = doom_music_choose(choices.data(), choices.size(),
+                    previousRandomMusic, distribution(musicRandom));
+            }
+        }
+        mapMusicSelected = true;
+    }
+    void requestMapMusic() {
+        if (!mapMusicSelected) chooseMapMusic();
+        requestMusic(mapMusic.track, false, mapMusic.doom2);
     }
     void cancel(uint64_t& token) {
         if (token && core.token_cancel) {
@@ -303,11 +399,11 @@ struct Runtime {
                 return true;
             doom_audio_music_stop(audio);
             const bool wasPlaying = musicPlaying;
-            if (wasPlaying) resumeTrack = playingTrack;
+            if (wasPlaying) { resumeTrack = playingTrack; resumeDoom2 = playingDoom2; }
             musicPlaying = false;
             (void)releaseMusicLease();
             if (musicToken) return false;
-            if (wasPlaying && !pendingMusic.pcm && !rendering.valid()) requestMusic(resumeTrack, musicOverride);
+            if (wasPlaying && !pendingMusic.pcm && !rendering.valid()) requestMusic(resumeTrack, musicOverride, resumeDoom2);
         }
         if (now() < retryMusicAt) return false;
         retryMusicAt = now() + 1000;
@@ -318,15 +414,18 @@ struct Runtime {
         musicToken = result.token;
         return musicToken != 0;
     }
-    void requestMusic(unsigned track, bool overrideRequest = false) {
-        if (!assets.wad) return;
+    void requestMusic(unsigned track, bool overrideRequest = false, int selectedDoom2 = -1) {
+        const bool doom2 = selectedDoom2 < 0 ? player.doom2 != 0 : selectedDoom2 != 0;
+        DoomWad* wad = musicWad(doom2);
+        if (!wad) return;
         char name[9]{};
         DoomLump music{}, bank{};
-        if (!doom_music_lump_name(player.doom2, track, name) ||
-            !doom_wad_lump(assets.wad.get(), name, &music) ||
-            !doom_wad_lump(assets.wad.get(), "GENMIDI", &bank) ||
+        if (!doom_music_lump_name(doom2, track, name) ||
+            !doom_wad_lump(wad, name, &music) ||
+            !doom_wad_lump(wad, "GENMIDI", &bank) ||
             music.size > 4u * 1024u * 1024u || bank.size > 65536u) return;
         requestedTrack = track;
+        requestedDoom2 = doom2;
         requestOverride = overrideRequest;
         pendingMusic = {};
         // A pending render finishes before starting another; the latest request wins.
@@ -339,7 +438,7 @@ struct Runtime {
         const bool useSoundFont=settings.musicSynth=="soundfont";
         const std::string fontPath=settings.soundfont;
         rendering = std::async(std::launch::async,
-            [score = std::move(score), instruments = std::move(instruments), track, epoch, cancel,
+            [score = std::move(score), instruments = std::move(instruments), track, doom2, epoch, cancel,
              useSoundFont, fontPath]() {
                 PreparedMusic output;
                 int16_t* pcm = nullptr;
@@ -360,6 +459,7 @@ struct Runtime {
                         instruments.size(), &pcm, &output.frames, 44100, canceled, cancel.get()))
                     output.pcm.reset(pcm);
                 output.track = track;
+                output.doom2 = doom2;
                 output.epoch = epoch;
                 return output;
             });
@@ -376,7 +476,7 @@ struct Runtime {
         if (musicToken && !acquireMusic()) return;
         if (rendering.valid() && rendering.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             PreparedMusic result = rendering.get();
-            if (result.track != requestedTrack || result.epoch != musicEpoch) { requestMusic(requestedTrack, requestOverride); return; }
+            if (result.track != requestedTrack || result.doom2 != requestedDoom2 || result.epoch != musicEpoch) { requestMusic(requestedTrack, requestOverride, requestedDoom2); return; }
             if (result.soundfontFallback)
                 log("WARN","Dooming Light could not load the SoundFont; using Classic OPL.");
             if (!result.pcm) {
@@ -385,7 +485,7 @@ struct Runtime {
                 if (!musicPlaying && resumeTrack) {
                     const unsigned previous = resumeTrack;
                     resumeTrack = 0;
-                    requestMusic(previous, musicOverride);
+                    requestMusic(previous, musicOverride, resumeDoom2);
                 } else if (!musicPlaying && settings.music != "off") {
                     (void)releaseMusicLease();
                 }
@@ -404,6 +504,8 @@ struct Runtime {
                     pendingMusic.soundfontUsed ? "SoundFont" : "Classic OPL",pendingMusic.track);
                 log("INFO",message);
                 playingTrack = pendingMusic.track;
+                playingDoom2 = pendingMusic.doom2;
+                previousRandomMusic = {playingTrack, playingDoom2};
                 resumeTrack = 0;
                 if (requestOverride) musicOverride = true;
                 requestOverride = false;
@@ -413,7 +515,7 @@ struct Runtime {
                 if (!musicPlaying && resumeTrack) {
                     const unsigned previous = resumeTrack;
                     resumeTrack = 0;
-                    requestMusic(previous, musicOverride);
+                    requestMusic(previous, musicOverride, resumeDoom2);
                 } else if (!musicPlaying && settings.music != "off") {
                     (void)releaseMusicLease();
                 }
@@ -430,6 +532,50 @@ struct Runtime {
             return played;
         }
         return false;
+    }
+    void prepareSecretSound() {
+        const std::string &selected=settings.secretSound.empty() ? bundledSecret : settings.secretSound;
+        if (secretLoading.valid()) {
+            if (secretLoading.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready) return;
+            try {
+                PreparedEffect effect=secretLoading.get();
+                if (effect.path==selected) {
+                    secretEffect=std::move(effect);
+                    if (!secretEffect.pcm) log("WARN","Dooming Light: secret sound file could not be loaded; using the WAD sound.");
+                }
+            } catch (...) {
+                log("WARN","Dooming Light: secret sound file could not be loaded; using the WAD sound.");
+            }
+        }
+        if (secretRequested==selected) return;
+        secretRequested=selected;
+        if (secretRequested.empty()) { secretEffect={}; return; }
+        try {
+            const std::string path=secretRequested;
+            secretLoading=std::async(std::launch::async,[path] {
+                PreparedEffect effect; effect.path=path;
+                DoomSound decoded{};
+                if (doom_sound_file_load(path.c_str(),&decoded)) {
+                    effect.pcm.reset(decoded.samples); effect.rate=decoded.rate; effect.count=decoded.count;
+                }
+                return effect;
+            });
+        } catch (...) {
+            log("WARN","Dooming Light: secret sound file could not be loaded; using the WAD sound.");
+        }
+    }
+    void secretSound() {
+        const std::string &selected=settings.secretSound.empty() ? bundledSecret : settings.secretSound;
+        if (audio && secretEffect.pcm && secretEffect.path==selected &&
+            doom_audio_play_pcm(audio,secretEffect.pcm.get(),secretEffect.count,secretEffect.rate,
+                settings.effectsVolume/100.f)) return;
+        if (!sound("DSSECRET") && !sound("DSGETPOW")) sound("DSITEMUP");
+    }
+    void presentSecret(bool hudReady) {
+        const char *message=doom_messages_text(&secretMessages);
+        const bool visible=hudReady && message &&
+            doom_hud_render_secret(assets.hud.get(),secretPixels.data(),secretPixels.size(),message);
+        (void)doom_engine_present_secret(engine,visible ? secretPixels.data() : nullptr,visible);
     }
     void weaponSound(unsigned soundId, const char* name) {
         if (soundId == DOOM_SOUND_SAWIDL && now() < sawStartupUntil) return;
@@ -452,7 +598,28 @@ struct Runtime {
     }
     void resetMotion() {
         motionSampleAt=0; lastMotionSpeed=0;
+        fallSampleAt=0; fallingMs=0; fallActor=0;
         doom_hud_motion_reset(assets.hud.get());
+    }
+    bool fallingFace(uint64_t timestamp, const DoomEngineFrame &frame, bool onFoot) {
+        float x=0, y=0, z=0;
+        if (!onFoot || player.health<=0 || frame.doom_dead || frame.death_commit ||
+            frame.paused || frame.noclip || frame.edge_active || frame.ladder_active ||
+            !frame.airborne_valid || !frame.airborne || !frame.airborne_actor ||
+            !doom_engine_position(engine,&x,&y,&z)) {
+            fallSampleAt=0; fallingMs=0; fallActor=0; return false;
+        }
+        if (fallActor!=frame.airborne_actor) { fallSampleAt=0; fallingMs=0; fallActor=frame.airborne_actor; }
+        if (fallSampleAt && timestamp==fallSampleAt) return fallingMs>=1000;
+        if (fallSampleAt && timestamp>fallSampleAt && timestamp-fallSampleAt<=250) {
+            const unsigned elapsed=static_cast<unsigned>(timestamp-fallSampleAt);
+            const float velocity=(y-fallSampleY)*1000.0f/static_cast<float>(elapsed);
+            if (std::isfinite(velocity) && velocity<-0.25f && velocity>-150.0f)
+                fallingMs=std::min(fallingMs+elapsed,60000u);
+            else fallingMs=0;
+        } else fallingMs=0;
+        fallSampleAt=timestamp; fallSampleY=y;
+        return fallingMs>=1000;
     }
     float movementSpeed(uint64_t timestamp, bool movingAllowed) {
         float x=0, y=0, z=0, speed=0;
@@ -578,6 +745,8 @@ struct Runtime {
                 event->type==DOOM_EVENT_WEAPON_FIRED || event->type==DOOM_EVENT_SOUND)) return;
         if (event->type == DOOM_EVENT_ATTACK) {
             const int result = doom_engine_attack(self.engine, event);
+            if (event->weapon==DOOM_CHAINGUN)
+                (void)doom_engine_muzzle_flash(self.engine,DOOM_CHAINGUN);
 #if defined(DOOM_MODE_LAB)
             const bool dispatched=std::strcmp(doom_engine_attack_reason(self.engine), "damage_dispatched")==0;
             if (event->weapon >= 0 && event->weapon < DOOM_WEAPON_COUNT &&
@@ -600,6 +769,8 @@ struct Runtime {
         }
         else if (event->type == DOOM_EVENT_WEAPON_FIRED) {
             const int result=doom_engine_report_shot(self.engine,static_cast<DoomWeapon>(event->weapon));
+            if (event->weapon!=DOOM_CHAINGUN)
+                (void)doom_engine_muzzle_flash(self.engine,static_cast<DoomWeapon>(event->weapon));
 #if defined(DOOM_MODE_LAB)
             if (event->weapon>=0 && event->weapon<DOOM_WEAPON_COUNT &&
                 self.noiseLogCount[static_cast<size_t>(event->weapon)]++<16) {
@@ -669,7 +840,8 @@ struct Runtime {
     void beginAssets() {
         assetsReadyForActivation=false;
         if (loading.valid()) { reloadAssets = true; return; }
-        const Settings selected = settings;
+        Settings selected = mapAssetSettings;
+        selected.randomMusic = randomMusicForMap;
         loading = std::async(std::launch::async, [selected]() {
             Assets result;
             char path[4097]{};
@@ -681,6 +853,13 @@ struct Runtime {
             if (found) {
                 result.wad.reset(doom_wad_open(path));
                 if (result.wad) result.hud.reset(doom_hud_create(result.wad.get()));
+                if (result.wad && selected.randomMusic) {
+                    const int otherGame = doom_wad_is_doom2(result.wad.get()) ? 1 : 2;
+                    const std::string& otherPath = otherGame == 1 ? selected.doom : selected.doom2;
+                    if (doom_find_iwad(otherGame, otherPath.c_str(), path, sizeof(path)))
+                        result.otherMusicWad.reset(doom_wad_open(path));
+                    collectMusicChoices(result);
+                }
             }
             return result;
         });
@@ -698,6 +877,7 @@ struct Runtime {
         lastDamageSequence=0;
         resetMotion();
         doom_pickup_feedback_reset(&pickupFeedback);
+        doom_messages_reset(&secretMessages);
         doom_vehicle_feedback_reset(&vehicleFeedback);
         pickupSoundQueued = false;
         pickupPowerSoundQueued = false;
@@ -714,6 +894,7 @@ struct Runtime {
         lastTick = 0;
     }
     void tick(uint32_t mapGeneration) {
+        prepareSecretSound();
         if (!scope) return;
         if (!haveGeneration || generation != mapGeneration) {
             deactivate(); generation = mapGeneration; haveGeneration = true;
@@ -726,6 +907,10 @@ struct Runtime {
             lastDamageSequence=0; damageFeedbackLogs=0; lastBodySuppression=-2; bodyFeedbackLogs=0;
 #endif
             musicOverride = false;
+            mapAssetSettings = settings;
+            randomMusicForMap = mapAssetSettings.randomMusic;
+            mapMusicSelected = false;
+            mapMusic = {};
             beginAssets();
         }
         if (loading.valid() && loading.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -758,7 +943,7 @@ struct Runtime {
             }
             active = true;
             retryActivationAt=0;
-            if (settings.music == "doom") requestMusic(defaultTrack());
+            if (settings.music == "doom") requestMapMusic();
         }
         if (!active) { (void)releaseMusicLease(); return; }
         DoomEngineFrame frame{};
@@ -767,19 +952,6 @@ struct Runtime {
             beginAssets();
             return;
         }
-        const std::array<int,8> chatState={frame.paused,frame.chat_view,frame.chat.available,
-            frame.chat.open,frame.input_blocks,frame.camera_mode,
-            static_cast<int>(frame.chat.owner_thread),static_cast<int>(frame.chat.polling_thread)};
-        if (chatState!=previousChatState && chatDiagnosticCount<64 &&
-                (frame.input_blocks==1 || previousChatState[4]==1)) {
-            char message[256]{};
-            std::snprintf(message,sizeof(message),
-                "Dooming Light chat: paused=%d view=%d available=%d open=%d blocks=%d camera=%d owner=%u polling=%u validation=%d",
-                frame.paused,frame.chat_view,frame.chat.available,frame.chat.open,
-                frame.input_blocks,frame.camera_mode,frame.chat.owner_thread,frame.chat.polling_thread,frame.chat.validation);
-            log("INFO",message); ++chatDiagnosticCount;
-        }
-        previousChatState=chatState;
         doom_engine_allow_native_pickups(engine,0);
         doom_audio_poll(audio);
         doom_audio_pause(audio, frame.paused && !frame.noclip_input && !frame.chat_view);
@@ -833,6 +1005,7 @@ struct Runtime {
                     ? static_cast<unsigned>(std::min<uint64_t>(stamp-flyHudTick,250)) : 0;
                 flyHudTick=stamp;
                 doom_pickup_feedback_begin_frame(&pickupFeedback,elapsed);
+                doom_messages_tick(&secretMessages,elapsed);
                 if (settings.cheats)
                     for (unsigned i=0; i<std::min(frame.cheat_count,16u); ++i)
                         doom_cheat_char(&player,frame.cheat_chars[i],onDoomEvent,this);
@@ -845,6 +1018,7 @@ struct Runtime {
                     const bool presented=doom_engine_present_layers(engine,weaponPixels.data(),statusPixels.data(),messagePixels.data(),
                         settings.hudFit ? 0.f : settings.hud/100.f,settings.weaponScale/100.f,0,0)!=0;
                     doom_chat_presented(chatReady && presented);
+                    presentSecret(presented);
                 }
             } else flyHudTick=0;
             lastTick=0;
@@ -914,6 +1088,7 @@ struct Runtime {
             stopWeaponSound();
             resetMotion();
             doom_pickup_feedback_reset(&pickupFeedback);
+            doom_messages_reset(&secretMessages);
             doom_vehicle_feedback_reset(&vehicleFeedback);
             doom_reset(&player, player.doom2);
             deathSoundPlayed=false;
@@ -1005,27 +1180,43 @@ struct Runtime {
         }
 #endif
         doom_pickup_feedback_begin_frame(&pickupFeedback, frameElapsed);
+        doom_messages_tick(&secretMessages,frameElapsed);
         pickupSoundQueued = false;
         pickupPowerSoundQueued = false;
 #if defined(DOOM_MODE_RUNTIME)
-        DoomLootRecord convertedLoot[DOOM_WORLD_MAX_PICKUPS]{};
-        unsigned lootCapacity=0;
-        for (const auto &pickup : world.world.pickups) if (!pickup.active) ++lootCapacity;
         float lootX=0,lootY=0,lootZ=0;
-        if (player.health<=0 || !doom_engine_position(engine,&lootX,&lootY,&lootZ)) lootCapacity=0;
+        const bool lootPositionReady=player.health>0 && doom_engine_position(engine,&lootX,&lootY,&lootZ) &&
+            std::isfinite(lootX*32.0f) && std::isfinite(lootY*32.0f) && std::isfinite(lootZ*32.0f);
         const DoomVec3 lootPosition{lootX*32.0f,lootZ*32.0f,lootY*32.0f};
-        const unsigned convertedCount=doom_engine_loot_drain(engine,convertedLoot,lootCapacity);
-        for (unsigned i=0;i<convertedCount;++i) {
-            if (convertedLoot[i].generation!=generation || player.health<=0) continue;
+        for (unsigned i=0;i<DOOM_WORLD_MAX_PICKUPS;++i) {
+            DoomLootRecord convertedLoot{};
+            uint64_t token=0;
+            if (!doom_engine_loot_peek(engine,&convertedLoot,&token)) break;
+            if (convertedLoot.generation!=generation) {
+                if (!doom_engine_loot_consume(engine,token)) break;
+                continue;
+            }
+            if (player.health<=0) break;
             DoomDrop drop=DOOM_DROP_MEDIKIT;
-            if (convertedLoot[i].kind==DOOM_LOOT_AMMO) {
+            if (convertedLoot.kind==DOOM_LOOT_AMMO) {
                 int best=0;
                 for (int a=1;a<4;++a)
                     if (player.ammo[a]*player.max_ammo[best]<player.ammo[best]*player.max_ammo[a]) best=a;
                 drop=static_cast<DoomDrop>(best);
-            } else if (convertedLoot[i].kind!=DOOM_LOOT_HEALTH) continue;
+            } else if (convertedLoot.kind!=DOOM_LOOT_HEALTH) break;
             const int before=drop<=DOOM_DROP_CELLS ? player.ammo[static_cast<int>(drop)] : player.health;
-            if (doom_collect(&player,drop)) {
+            DoomPlayer collectedPlayer=player;
+            const bool collected=doom_collect(&collectedPlayer,drop)!=0;
+            bool freeSlot=false;
+            if (!collected && lootPositionReady)
+                for (const auto &pickup : world.world.pickups) if (!pickup.active) { freeSlot=true; break; }
+            if (!collected && !freeSlot) {
+                if (!doom_engine_loot_rotate(engine,token)) break;
+                continue;
+            }
+            if (!doom_engine_loot_consume(engine,token)) break;
+            if (collected) {
+                player=collectedPlayer;
                 const int after=drop<=DOOM_DROP_CELLS ? player.ammo[static_cast<int>(drop)] : player.health;
                 onPickup(this,drop,after-before);
             } else {
@@ -1034,10 +1225,17 @@ struct Runtime {
         }
 #endif
         DoomNativePickupRecord nativePickups[16]{};
-        const unsigned nativeCapacity=nativePickupMessages.size()<32
-            ? static_cast<unsigned>(std::min<size_t>(16,32-nativePickupMessages.size())) : 0;
-        const unsigned nativeCount=doom_engine_native_pickups(engine,nativePickups,nativeCapacity);
-        for (unsigned i=0; i<nativeCount; ++i) nativePickupMessages.emplace_back(nativePickups[i].text);
+        bool secretSoundQueued=false;
+        const unsigned nativeCount=doom_engine_native_pickups(engine,nativePickups,16);
+        for (unsigned i=0; i<nativeCount; ++i) {
+            if (nativePickups[i].kind==DOOM_NATIVE_PICKUP_SECRET) {
+                if (doom_messages_post(&secretMessages,nativePickups[i].text,
+                        DOOM_MESSAGE_IMPORTANT,4000)) secretSoundQueued=true;
+            } else {
+                if (nativePickupMessages.size()==32) nativePickupMessages.pop_front();
+                nativePickupMessages.emplace_back(nativePickups[i].text);
+            }
+        }
         if (!nativePickupMessages.empty() && timestamp>=nextNativePickupMessage &&
                 doom_messages_post(&pickupFeedback.messages,nativePickupMessages.front().c_str(),DOOM_MESSAGE_NORMAL,3000)) {
             nativePickupMessages.pop_front();
@@ -1137,11 +1335,18 @@ struct Runtime {
 #endif
         }
         lastTick = timestamp;
-        if (pickupSoundQueued && (!pickupPowerSoundQueued || !sound("DSGETPOW"))) sound("DSITEMUP");
+        if (secretSoundQueued) {
+            secretSound();
+        } else if (pickupSoundQueued && (!pickupPowerSoundQueued || !sound("DSGETPOW"))) sound("DSITEMUP");
         if (combatSuspended || player.weapon != DOOM_CHAINSAW || player.switch_phase == 1 || player.health <= 0)
             stopWeaponSound();
         DoomPlayer renderPlayer{};
         doom_vehicle_feedback_present(&vehicleFeedback,&player,&renderPlayer);
+        if (fallingFace(timestamp,frame,vehicleStatus==DLUMA_STATUS_OK &&
+                vehicle.player_present && !vehicle.vehicle_present)) {
+            const int tier=(100-std::clamp(player.health,0,100))*5/101;
+            renderPlayer.face_index=tier*8+5;
+        }
         const bool living=player.health>0 && !frame.doom_dead;
         const int reachSide=living && frame.edge_active && (frame.edge_state==2 || frame.edge_state==3)
             ? (frame.edge_state==2 ? -1 : 1) : 0;
@@ -1179,10 +1384,9 @@ struct Runtime {
                 messagePixels.data(), settings.hudFit ? 0.f : settings.hud / 100.f,
                 settings.weaponScale / 100.f,weaponX,weaponY)!=0;
             doom_chat_presented(chatReady && presented);
-            const bool important=pickupFeedback.messages.remaining_ms &&
-                pickupFeedback.messages.priority==DOOM_MESSAGE_IMPORTANT;
-            doom_engine_allow_native_pickups(engine,presented && living && !important && nativePickupMessages.size()<=16);
-        } else doom_chat_presented(0);
+            presentSecret(presented);
+            doom_engine_allow_native_pickups(engine,presented && living);
+        } else { doom_chat_presented(0); presentSecret(false); }
         musicTick();
     }
     DlumaStatus prepare(const DlumaApiV1* host) {
@@ -1198,6 +1402,7 @@ struct Runtime {
         (void)service(DLUMA_SERVICE_AUDIO_V1, media);
         if (service(DLUMA_SERVICE_PLAYER_V1, playerApi)) (void)doom_movement_init(&movement, &playerApi);
         engine = doom_engine_create(); audio = doom_audio_create(); gamepad=doom_gamepad_create();
+        bundledSecret=bundledSecretSound();
         if (!engine || !audio) return DLUMA_STATUS_UNAVAILABLE;
 #if defined(DOOM_MODE_RUNTIME)
         worldDisplay = doom_world_display_create();
@@ -1227,9 +1432,12 @@ struct Runtime {
         cancel(updateToken); cancel(configToken);
         if (rendering.valid()) rendering.wait();
         if (loading.valid()) loading.wait();
+        if (secretLoading.valid()) secretLoading.wait();
         doom_gamepad_destroy(gamepad); gamepad=nullptr;
         rendering = {}; loading = {};
-        assets.hud.reset(); assets.wad.reset();
+        secretLoading={}; secretEffect={}; secretRequested.clear();
+        assets.hud.reset(); assets.otherMusicWad.reset(); assets.wad.reset();
+        assets.musicChoices.clear();
 #if defined(DOOM_MODE_RUNTIME)
         doom_world_display_destroy(worldDisplay); worldDisplay = nullptr;
         worldDisplayWarned = false;

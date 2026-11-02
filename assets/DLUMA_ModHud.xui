@@ -45,6 +45,17 @@
         </IUIAARectangle>
         <IUIAARectangle>
             <Properties>
+                <Id>I_DLUMASecretMessage</Id>
+                <Width>960.000000</Width>
+                <Height>57.600000</Height>
+                <Position>160.000000,223.200000,0.000000</Position>
+                <ImagePath>white</ImagePath>
+                <ClassOverride>IUIImage</ClassOverride>
+                <Show>false</Show>
+            </Properties>
+        </IUIAARectangle>
+        <IUIAARectangle>
+            <Properties>
                 <Id>I_DLUMADamageTint</Id>
                 <Width>1280.000000</Width>
                 <Height>720.000000</Height>

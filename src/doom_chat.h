@@ -10,8 +10,6 @@ extern "C" {
 #define DOOM_CHAT_TEXT_CAPACITY 1024
 typedef struct DoomChatSnapshot {
     int available, open, channel;
-    unsigned owner_thread, polling_thread;
-    int validation;
     unsigned notifications, line_count;
     char lines[DOOM_CHAT_HISTORY][DOOM_CHAT_TEXT_CAPACITY];
     char draft[DOOM_CHAT_TEXT_CAPACITY];

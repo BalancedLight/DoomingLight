@@ -20,6 +20,9 @@ int doom_hud_host_update_layers(DoomHudHost *host, void *level, uint32_t generat
                                 const uint8_t *weapon, const uint8_t *status,
                                 const uint8_t *message, float hud_scale, float weapon_scale,
                                 float weapon_x, float weapon_y);
+/* Present a 320x16 RGBA secret message; rgba may be null when hidden. */
+int doom_hud_host_secret(DoomHudHost *host, void *level, uint32_t generation,
+                         const uint8_t *rgba, int visible);
 void doom_hud_host_destroy(DoomHudHost *host, void *current_level, uint32_t generation);
 void doom_hud_host_hide(DoomHudHost *host, void *current_level, uint32_t generation);
 /* Hide only native death-screen text while allowing its fade and callbacks. */

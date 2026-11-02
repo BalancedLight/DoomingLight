@@ -38,10 +38,11 @@ typedef struct DoomEngineFrame {
     int doom_dead, death_commit, parkour, interaction_active;
     int noclip, noclip_input, noclip_notice;
     int chat_view;
-    int input_blocks, camera_mode;
     DoomChatSnapshot chat;
     unsigned move_state, edge_state;
     int edge_active, ladder_active;
+    int airborne_valid, airborne;
+    uint64_t airborne_actor; /* Transient identity only; never dereference. */
     unsigned damage_sequence;
     unsigned jump_sounds;
     unsigned voice_observation_count;
@@ -90,13 +91,16 @@ void doom_engine_set_voice_replacement(DoomEngine *engine, int ready);
 int doom_engine_request_noclip(DoomEngine *engine);
 void doom_engine_allow_native_pickups(DoomEngine *engine, int accepting);
 unsigned doom_engine_native_pickups(DoomEngine *engine, DoomNativePickupRecord *out, unsigned capacity);
-unsigned doom_engine_loot_drain(DoomEngine *engine, DoomLootRecord *out, unsigned capacity);
+int doom_engine_loot_peek(DoomEngine *engine, DoomLootRecord *out, uint64_t *token);
+int doom_engine_loot_consume(DoomEngine *engine, uint64_t token);
+int doom_engine_loot_rotate(DoomEngine *engine, uint64_t token);
 int doom_engine_initialize(DoomEngine *engine);
 int doom_engine_activate(DoomEngine *engine, uint32_t map_generation);
 void doom_engine_deactivate(DoomEngine *engine);
 int doom_engine_poll(DoomEngine *engine, DoomEngineFrame *frame);
 int doom_engine_attack(DoomEngine *engine, const DoomEvent *event);
 int doom_engine_report_shot(DoomEngine *engine, DoomWeapon weapon);
+int doom_engine_muzzle_flash(DoomEngine *engine, DoomWeapon weapon);
 int doom_engine_sample_movement(DoomEngine *engine, DoomMovementSnapshot *sample);
 const char *doom_engine_attack_reason(DoomEngine *engine);
 void doom_engine_attack_counts(DoomEngine *engine, unsigned *actors, unsigned *tested, unsigned *hit);
@@ -121,6 +125,7 @@ int doom_engine_present(DoomEngine *engine, const uint8_t *rgba, unsigned width,
 int doom_engine_present_layers(DoomEngine *engine, const uint8_t *weapon,
                                 const uint8_t *status, const uint8_t *message,
                                float hud_scale, float weapon_scale, float weapon_x, float weapon_y);
+int doom_engine_present_secret(DoomEngine *engine, const uint8_t *rgba, int visible);
 
 #ifdef __cplusplus
 }

@@ -53,6 +53,8 @@ int doom_hud_render_layers(DoomHud *hud, const DoomPlayer *player,
 /* Overlay chat history and the native edit draft using the IWAD font. */
 int doom_hud_render_chat(DoomHud *hud, uint8_t *message, size_t size,
                           const DoomChatSnapshot *chat, int preserve_notice);
+/* Render centered gold Doom text to a transparent 320x16 RGBA plane. */
+int doom_hud_render_secret(DoomHud *hud, uint8_t *rgba, size_t size, const char *text);
 #ifdef __cplusplus
 }
 #endif

@@ -115,7 +115,7 @@ struct DoomHudHost {
     SetColor set_color;
     void *stock_root; void *stock_elements[7]; bool stock_owned[7];
     void *death_root, *death_elements[5]; bool death_owned[5];
-    DoomHudHost *layers[2]; unsigned layer_kind; bool split_layers, inside_layered_update;
+    DoomHudHost *layers[3]; unsigned layer_kind; bool split_layers, inside_layered_update;
     float status_scale, weapon_x, weapon_y;
 };
 static const char *const stock_ids[7] = {"HudHealthIndicator", "HudStamina", "HudRadar", "HudPrimaryWeaponIndicator", "HudSecondaryWeaponIndicator", "HudWeaponSelection", "HudReloadNotify"};
@@ -207,8 +207,8 @@ static bool refresh_screen(DoomHudHost *h) {
     void *image = h->find_element(root, &id, 1);
     if (!image) { h->root = root; h->image = nullptr; h->bound = false; return false; }
     if (h->root != root || h->image != image) { h->root = root; h->image = image; h->bound = false; h->shown = false; h->material_applied = false; h->scale = 0; h->draw_width = 0; h->draw_height = 0; }
-    static const char *const ids[2] = {"I_DLUMAStatusBar", "I_DLUMAMessage"};
-    for (unsigned i = 0; i < 2; ++i) if (h->layers[i]) {
+    static const char *const ids[3] = {"I_DLUMAStatusBar", "I_DLUMAMessage", "I_DLUMASecretMessage"};
+    for (unsigned i = 0; i < 3; ++i) if (h->layers[i]) {
         TtlString layer_id = str(ids[i]);
         void *child = h->find_element(root, &layer_id, 1);
         if (!child || h->get_owner(child) != owner) return false;
@@ -246,13 +246,14 @@ struct HudGeometry { int left, top, width, height; };
 static HudGeometry layer_geometry(unsigned kind, int client_width, int client_height,
                                   float scale, bool align_weapon, float status_scale) {
     const bool fit_status = kind == 1 && scale == 0.0f;
-    const int source_height = kind == 1 ? 32 : kind == 2 ? 64 : 200;
+    const int source_height = kind == 1 ? 32 : kind == 2 ? 64 : kind == 3 ? 16 : 200;
     const int full_height = fit_status ? (client_width * 3 + 2) / 4
                                        : static_cast<int>(client_height * scale + 0.5f);
     const int width = fit_status ? client_width : (full_height * 4 + 1) / 3;
     const int height = (full_height * source_height + 100) / 200;
     HudGeometry result = {kind == 2 ? 0 : (client_width - width) / 2,
                           kind == 2 ? 0 : client_height - height, width, height};
+    if (kind == 3) result.top = (client_height * 35 + 50) / 100 - height / 2;
     if (kind == 0 && align_weapon) {
         const int bar_full_height = status_scale == 0.0f ? (client_width * 3 + 2) / 4
             : static_cast<int>(client_height * status_scale + 0.5f);
@@ -445,7 +446,7 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
         if (h->owns_screen && !refresh_screen(h)) return 0;
         if (!h->image || (image && image != h->image)) return 0;
         if (h->owns_screen && h->split_layers && !h->inside_layered_update) {
-            for (unsigned i = 0; i < 2; ++i) if (h->layers[i] && h->layers[i]->image) {
+            for (unsigned i = 0; i < 3; ++i) if (h->layers[i] && h->layers[i]->image) {
                 h->set_visible(h->layers[i]->image, 0); h->layers[i]->shown = false;
             }
             h->split_layers = false;
@@ -458,7 +459,8 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
         const bool fit_status = h->layer_kind == 1 && scale == 0.0f;
         if (!fit_status && !(scale >= 0.5f && scale <= 2.0f)) return 0;
         const LONG client_width = rect.right - rect.left, client_height = rect.bottom - rect.top;
-        const unsigned source_height = h->layer_kind == 1 ? 32u : h->layer_kind == 2 ? 64u : 200u;
+        const unsigned source_height = h->layer_kind == 1 ? 32u : h->layer_kind == 2 ? 64u :
+                                       h->layer_kind == 3 ? 16u : 200u;
         const HudGeometry geometry = layer_geometry(h->layer_kind, client_width, client_height, scale,
             h->split_layers && h->inside_layered_update, h->status_scale);
         const int canvas_left = geometry.left, canvas_top = geometry.top;
@@ -590,6 +592,34 @@ extern "C" int doom_hud_host_update_layers(DoomHudHost *h, void *level, uint32_t
         return weapon_ready && status_ready && message_ready;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
+extern "C" int doom_hud_host_secret(DoomHudHost *h, void *level, uint32_t generation,
+                                     const uint8_t *rgba, int visible) {
+    if (!h || !h->owns_screen || level != h->level || generation != h->generation) return 0;
+    if (!visible && !h->layers[2]) return 1;
+    __try {
+        if (!refresh_screen(h)) return 0;
+        if (!visible) {
+            if (h->layers[2] && h->layers[2]->image) {
+                h->set_visible(h->layers[2]->image, 0);
+                h->layers[2]->shown = false;
+            }
+            return 1;
+        }
+        if (!rgba || !h->shown) return 0;
+        if (!h->layers[2]) {
+            TtlString id = str("I_DLUMASecretMessage");
+            void *image = h->find_element(h->root, &id, 1);
+            void *owner = h->get_owner(h->root);
+            if (!image || !owner || h->get_owner(image) != owner) return 0;
+            h->layers[2] = doom_hud_host_create(level, image, generation);
+            if (!h->layers[2]) return 0;
+            h->layers[2]->layer_kind = 3;
+            h->layers[2]->material_owned = true;
+            doom_hud_host_set_filtering(h->layers[2], h->bilinear ? 1 : 0);
+        }
+        return doom_hud_host_update(h->layers[2], level, nullptr, generation, rgba, 1.0f);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
 extern "C" void doom_hud_host_destroy(DoomHudHost *h, void *level, uint32_t generation) {
     if (!h) return;
     __try {
@@ -597,14 +627,14 @@ extern "C" void doom_hud_host_destroy(DoomHudHost *h, void *level, uint32_t gene
             if (h->owns_screen) death_visibility(h, false);
             if (h->owns_screen) stock_visibility(h, false);
             if (h->owns_screen && refresh_screen(h)) { if (h->shown) h->hide(level, h->screen_id); (void)h->unregister(level, h->screen_id); }
-            for (unsigned i = 0; i < 2; ++i) if (h->layers[i]) {
+            for (unsigned i = 0; i < 3; ++i) if (h->layers[i]) {
                 doom_hud_host_destroy(h->layers[i], level, generation); h->layers[i] = nullptr;
             }
             release_texture(h, &h->pending, true);
             release_texture(h, &h->current, true);
             release_texture(h, &h->retiring, true);
         } else {
-            for (unsigned i = 0; i < 2; ++i) if (h->layers[i]) {
+            for (unsigned i = 0; i < 3; ++i) if (h->layers[i]) {
                 doom_hud_host_destroy(h->layers[i], level, generation); h->layers[i] = nullptr;
             }
             release_texture(h, &h->pending, false);

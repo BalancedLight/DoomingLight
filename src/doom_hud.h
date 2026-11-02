@@ -1,5 +1,6 @@
 #ifndef DOOM_HUD_H
 #define DOOM_HUD_H
+#include "doom_chat.h"
 #include "doom_core.h"
 #include "doom_wad.h"
 #include <stddef.h>
@@ -43,12 +44,15 @@ DoomHudHandResult doom_hud_hand_update(DoomHud *hud, unsigned elapsed_ms,
 /* Replace the weapon layer with the IWAD hand. side is -1 (left) or 1 (right). */
 int doom_hud_render_reach(DoomHud *hud, uint8_t *weapon, size_t size, int side);
 /* Each transparent layer uses 320 pixels per row. The status and message
- * layers are respectively 32 and 16 rows; the weapon layer is 200 rows. */
+ * layers are respectively 32 and 64 rows; the weapon layer is 200 rows. */
 int doom_hud_render_layers(DoomHud *hud, const DoomPlayer *player,
                            uint8_t *weapon, size_t weapon_size,
                            uint8_t *status, size_t status_size,
                            uint8_t *message, size_t message_size,
                            const char *message_text);
+/* Overlay chat history and the native edit draft using the IWAD font. */
+int doom_hud_render_chat(DoomHud *hud, uint8_t *message, size_t size,
+                          const DoomChatSnapshot *chat, int preserve_notice);
 #ifdef __cplusplus
 }
 #endif

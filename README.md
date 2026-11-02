@@ -73,6 +73,11 @@ Carried objects use native throw controls; Doom weapons require a fresh fire
 press after the object is thrown or dropped.
 New skill XP is suppressed while the mode is active.
 
+Enter opens chat with Doom's font and message sounds; Shift+Enter selects team
+chat. Text entry, player names, channels, message history and delivery use the
+game's normal chat system. Gameplay continues while typing, with Doom weapon
+and cheat input suspended.
+
 On a controller, right trigger fires and D-pad Left/Right select the previous
 and next weapon. X interacts; jump, parkour, flashlight and the other native
 movement controls retain their bindings. Mods settings can move fire to the

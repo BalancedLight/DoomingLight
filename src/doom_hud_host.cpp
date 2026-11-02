@@ -246,7 +246,7 @@ struct HudGeometry { int left, top, width, height; };
 static HudGeometry layer_geometry(unsigned kind, int client_width, int client_height,
                                   float scale, bool align_weapon, float status_scale) {
     const bool fit_status = kind == 1 && scale == 0.0f;
-    const int source_height = kind == 1 ? 32 : kind == 2 ? 16 : 200;
+    const int source_height = kind == 1 ? 32 : kind == 2 ? 64 : 200;
     const int full_height = fit_status ? (client_width * 3 + 2) / 4
                                        : static_cast<int>(client_height * scale + 0.5f);
     const int width = fit_status ? client_width : (full_height * 4 + 1) / 3;
@@ -458,7 +458,7 @@ extern "C" int doom_hud_host_update(DoomHudHost *h, void *level, void *image, ui
         const bool fit_status = h->layer_kind == 1 && scale == 0.0f;
         if (!fit_status && !(scale >= 0.5f && scale <= 2.0f)) return 0;
         const LONG client_width = rect.right - rect.left, client_height = rect.bottom - rect.top;
-        const unsigned source_height = h->layer_kind == 1 ? 32u : h->layer_kind == 2 ? 16u : 200u;
+        const unsigned source_height = h->layer_kind == 1 ? 32u : h->layer_kind == 2 ? 64u : 200u;
         const HudGeometry geometry = layer_geometry(h->layer_kind, client_width, client_height, scale,
             h->split_layers && h->inside_layered_update, h->status_scale);
         const int canvas_left = geometry.left, canvas_top = geometry.top;

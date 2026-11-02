@@ -13,6 +13,7 @@
 #include "doom_loot_adapter.h"
 #include "doom_noclip.h"
 #include "doom_player_voice.h"
+#include "doom_chat.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +37,9 @@ typedef struct DoomEngineFrame {
     int ready, paused, alive, respawn, fire, fire_held, carrying, interact_failed;
     int doom_dead, death_commit, parkour, interaction_active;
     int noclip, noclip_input, noclip_notice;
+    int chat_view;
+    int input_blocks, camera_mode;
+    DoomChatSnapshot chat;
     unsigned move_state, edge_state;
     int edge_active, ladder_active;
     unsigned damage_sequence;

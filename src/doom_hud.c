@@ -383,7 +383,96 @@ int doom_hud_render_layers(DoomHud *hud, const DoomPlayer *p,
     if (!weapon || weapon_size < 320u * 200u * 4u ||
         !status || status_size < 320u * 32u * 4u ||
         !message || message_size < 320u * 16u * 4u) return 0;
+    if (message_size>=320u*64u*4u) memset(message,0,320u*64u*4u);
     return render_layers(hud, p, weapon, status, message, text);
+}
+
+static unsigned chat_character(const unsigned char **text)
+{
+    unsigned ch=*(*text)++;
+    if (ch>=128) {
+        while ((**text&0xc0u)==0x80u) ++*text;
+        return '?';
+    }
+    return ch<32 ? ' ' : (unsigned)toupper((int)ch);
+}
+static int chat_width(DoomHud *hud, unsigned ch)
+{
+    char name[9];
+    const DoomImage *glyph;
+    if (ch<33 || ch>95) return 4;
+    snprintf(name,sizeof(name),"STCFN%03u",ch);
+    glyph=patch(hud,name);
+    return glyph ? (int)glyph->width : 4;
+}
+static void chat_text(DoomHud *hud, HudCanvas *canvas, const char *text, int y)
+{
+    int x=0;
+    const unsigned char *p=(const unsigned char *)text;
+    while (*p) {
+        unsigned ch=chat_character(&p);
+        int width=chat_width(hud,ch);
+        char name[9];
+        if (x+width>320) break;
+        if (ch>=33 && ch<=95) {
+            snprintf(name,sizeof(name),"STCFN%03u",ch);
+            draw(hud,canvas,name,x,y,0);
+        }
+        x+=width;
+    }
+}
+int doom_hud_render_chat(DoomHud *hud, uint8_t *message, size_t size,
+                          const DoomChatSnapshot *chat, int preserve_notice)
+{
+    char rows[7][128]={{0}}, draft[DOOM_CHAT_TEXT_CAPACITY+16];
+    unsigned row=0, column=0, count=0, i;
+    const unsigned first_row=preserve_notice ? 2u : 0u;
+    const unsigned history_rows=7u-first_row;
+    int width=0;
+    HudCanvas canvas={message,64,0};
+    if (!hud || !message || size<320u*64u*4u || !chat || !chat->available) return 0;
+    if (!patch(hud,"STCFN033")) return 0;
+    if (chat->open) {
+        const unsigned char *p=(const unsigned char *)chat->draft;
+        while (*p) {
+            if (*p>126 || *p==96 || *p>=123) return 0;
+            ++p;
+        }
+    }
+    if (!chat->open && !chat->line_count) return 1;
+    memset(message+320u*first_row*8u*4u,0,320u*(64u-first_row*8u)*4u);
+    for (i=0;i<chat->line_count && i<DOOM_CHAT_HISTORY;++i) {
+        const unsigned char *p=(const unsigned char *)chat->lines[i];
+        while (*p) {
+            unsigned ch=chat_character(&p);
+            int next=chat_width(hud,ch);
+            if (column>=126 || width+next>320) {
+                row=(row+1)%history_rows; rows[row][0]=0; column=0; width=0;
+                if (count+1<history_rows) ++count;
+            }
+            rows[row][column++]=(char)ch; rows[row][column]=0; width+=next;
+        }
+        if (i+1<chat->line_count) {
+            row=(row+1)%history_rows; rows[row][0]=0; column=0; width=0;
+            if (count+1<history_rows) ++count;
+        }
+    }
+    if (chat->line_count) {
+        unsigned first=(row+history_rows-count)%history_rows;
+        for (i=0;i<=count;++i) chat_text(hud,&canvas,rows[(first+i)%history_rows],(int)(i+first_row)*8);
+    }
+    if (chat->open) {
+        const unsigned char *tail=(const unsigned char *)chat->draft;
+        const unsigned char *p=tail;
+        const unsigned char *prefix=(const unsigned char *)(chat->channel ? "TEAM: " : "SAY: ");
+        int available=320-chat_width(hud,'_'), total=0;
+        while (*prefix) available-=chat_width(hud,chat_character(&prefix));
+        while (*p) total+=chat_width(hud,chat_character(&p));
+        while (*tail && total>available) total-=chat_width(hud,chat_character(&tail));
+        snprintf(draft,sizeof(draft),"%s %s_",chat->channel ? "TEAM:" : "SAY:",(const char *)tail);
+        chat_text(hud,&canvas,draft,(int)(first_row+(chat->line_count ? count+1 : 0))*8);
+    }
+    return 1;
 }
 int doom_hud_render(DoomHud *hud, const DoomPlayer *p, uint8_t *rgba, size_t size)
 {

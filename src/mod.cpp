@@ -113,7 +113,7 @@ struct Runtime {
     std::shared_ptr<std::atomic<bool>> cancelRender;
     std::array<uint8_t, 320 * 200 * 4> weaponPixels{};
     std::array<uint8_t, 320 * 32 * 4> statusPixels{};
-    std::array<uint8_t, 320 * 16 * 4> messagePixels{};
+    std::array<uint8_t, 320 * 64 * 4> messagePixels{};
     DoomPickupFeedback pickupFeedback{};
     DoomVehicleFeedback vehicleFeedback{};
     bool pickupSoundQueued = false, pickupPowerSoundQueued = false;
@@ -168,6 +168,8 @@ struct Runtime {
     bool bindingWarning = false;
     bool assetsReadyForActivation = false;
     uint64_t retryActivationAt = 0;
+    std::array<int,8> previousChatState{};
+    unsigned chatDiagnosticCount=0;
 
     template<class T> bool service(const char* id, T& output) {
         output = {};
@@ -765,9 +767,25 @@ struct Runtime {
             beginAssets();
             return;
         }
+        const std::array<int,8> chatState={frame.paused,frame.chat_view,frame.chat.available,
+            frame.chat.open,frame.input_blocks,frame.camera_mode,
+            static_cast<int>(frame.chat.owner_thread),static_cast<int>(frame.chat.polling_thread)};
+        if (chatState!=previousChatState && chatDiagnosticCount<64 &&
+                (frame.input_blocks==1 || previousChatState[4]==1)) {
+            char message[256]{};
+            std::snprintf(message,sizeof(message),
+                "Dooming Light chat: paused=%d view=%d available=%d open=%d blocks=%d camera=%d owner=%u polling=%u validation=%d",
+                frame.paused,frame.chat_view,frame.chat.available,frame.chat.open,
+                frame.input_blocks,frame.camera_mode,frame.chat.owner_thread,frame.chat.polling_thread,frame.chat.validation);
+            log("INFO",message); ++chatDiagnosticCount;
+        }
+        previousChatState=chatState;
         doom_engine_allow_native_pickups(engine,0);
         doom_audio_poll(audio);
-        doom_audio_pause(audio, frame.paused && !frame.noclip_input);
+        doom_audio_pause(audio, frame.paused && !frame.noclip_input && !frame.chat_view);
+        if (!frame.paused || frame.noclip_input || frame.chat_view)
+            for (unsigned i=0;i<std::min(frame.chat.notifications,16u);++i)
+                (void)sound(player.doom2 ? "DSRADIO" : "DSTINK");
         if (frame.invuln_requested && invulnDiagnosticLogs<64 &&
             (frame.invuln_stage!=lastInvulnStage || now()>=nextInvulnDiagnostic)) {
             char message[224]{};
@@ -822,8 +840,11 @@ struct Runtime {
                         weaponPixels.data(),weaponPixels.size(),statusPixels.data(),statusPixels.size(),
                         messagePixels.data(),messagePixels.size(),doom_pickup_feedback_text(&pickupFeedback))) {
                     weaponPixels.fill(0);
-                    (void)doom_engine_present_layers(engine,weaponPixels.data(),statusPixels.data(),messagePixels.data(),
-                        settings.hudFit ? 0.f : settings.hud/100.f,settings.weaponScale/100.f,0,0);
+                    const bool chatReady=doom_hud_render_chat(assets.hud.get(),messagePixels.data(),messagePixels.size(),&frame.chat,
+                        pickupFeedback.messages.remaining_ms!=0)!=0;
+                    const bool presented=doom_engine_present_layers(engine,weaponPixels.data(),statusPixels.data(),messagePixels.data(),
+                        settings.hudFit ? 0.f : settings.hud/100.f,settings.weaponScale/100.f,0,0)!=0;
+                    doom_chat_presented(chatReady && presented);
                 }
             } else flyHudTick=0;
             lastTick=0;
@@ -927,7 +948,8 @@ struct Runtime {
         if (frame.carrying) carryFireLatch=true;
         else if (carryFireLatch && !frame.fire_held) carryFireLatch=false;
         combatSuspended=doom_vehicle_feedback_blocks_weapons(&vehicleFeedback) ||
-            frame.parkour==2 || frame.interaction_active || handBusy || frame.carrying || carryFireLatch;
+            frame.parkour==2 || frame.interaction_active || handBusy || frame.carrying || carryFireLatch || frame.chat_view;
+        if (frame.chat_view) { player.cheat_len=0; player.cheat[0]=0; }
         const bool controllerEligible=frame.alive && player.health>0 && !frame.doom_dead &&
             !frame.death_commit && !combatSuspended;
         const DoomGamepadState controller=doom_gamepad_sample(gamepad,controllerEligible,
@@ -954,7 +976,7 @@ struct Runtime {
                 if (frame.weapon_slot >= 1 && frame.weapon_slot <= 7)
                     doom_select_slot(&player, frame.weapon_slot);
             }
-            if (settings.cheats) for (unsigned i = 0; i < std::min(frame.cheat_count, 16u); ++i)
+            if (settings.cheats && !frame.chat_view) for (unsigned i = 0; i < std::min(frame.cheat_count, 16u); ++i)
                 doom_cheat_char(&player, frame.cheat_chars[i], onDoomEvent, this);
             if (frame.interact_failed) sound("DSNOWAY");
         }
@@ -1151,13 +1173,16 @@ struct Runtime {
                 weaponPixels.fill(0); weaponX=weaponY=0.0f;
             }
             doom_hud_powerup_visuals(assets.hud.get(),&player,weaponPixels.data(),weaponPixels.size());
+            const bool chatReady=doom_hud_render_chat(assets.hud.get(),messagePixels.data(),messagePixels.size(),&frame.chat,
+                        pickupFeedback.messages.remaining_ms!=0)!=0;
             const bool presented=doom_engine_present_layers(engine, weaponPixels.data(), statusPixels.data(),
                 messagePixels.data(), settings.hudFit ? 0.f : settings.hud / 100.f,
                 settings.weaponScale / 100.f,weaponX,weaponY)!=0;
+            doom_chat_presented(chatReady && presented);
             const bool important=pickupFeedback.messages.remaining_ms &&
                 pickupFeedback.messages.priority==DOOM_MESSAGE_IMPORTANT;
             doom_engine_allow_native_pickups(engine,presented && living && !important && nativePickupMessages.size()<=16);
-        }
+        } else doom_chat_presented(0);
         musicTick();
     }
     DlumaStatus prepare(const DlumaApiV1* host) {

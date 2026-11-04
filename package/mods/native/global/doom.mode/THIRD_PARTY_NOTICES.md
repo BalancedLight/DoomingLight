@@ -17,6 +17,10 @@ See LICENSE and the notices in the source files.
 - DLUMA C SDK, setup and package tools: MIT, see LICENSE.DLUMA.
 - TinySoundFont 0.9: Copyright Bernhard Schelling and Steve Folta, MIT;
   see LICENSE.TSF.txt and third_party/tsf for the source and pinned revision.
+- TimGM6mb General MIDI SoundFont: Copyright 2004 Tim Brechbill and
+  2010 David Bolton, GPL-2.0. See LICENSE.TIMGM6MB.txt and NOTICE.TIMGM6MB.txt.
+  The editable SF2 is included in the corresponding-source archive.
+  Source and checksum provenance: third_party/timgm6mb/README.md.
 - MinHook 1.3.4: Copyright Tsuda Kageyu and contributors, BSD 2-Clause;
   see LICENSE.MINHOOK.txt and third_party/minhook.
 

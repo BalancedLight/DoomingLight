@@ -16,7 +16,7 @@ objectives, and interactions.
 
 ## Beta compatibility
 
-Version 0.1.0-beta.2 supports single-player Player maps on the following x64
+Version 0.1.0-beta.3 supports single-player Player maps on the following x64
 Player build:
 
 | Module | SHA-256 |
@@ -113,9 +113,12 @@ music** picks a track from available Doom and Doom II WADs on each map. Default 
 1 selects E1M1 in Doom or MAP01 in Doom II. Doom II uses track numbers 1–35;
 Doom also accepts its original `IDMUS` numbers 11–45, and settings 1–9 select
 E1M1–E1M9 while 10 selects E2M1. The `IDMUS` cheat uses the original game
-numbering. Select **SoundFont (SF2)** and provide your own
-SF2 file to use different instruments; Classic OPL is used if it cannot be
-loaded. Sound effects include `DSNOWAY`, Doom's failed-interaction sound.
+numbering. **SoundFont (SF2)** is the default synthesizer, using the included
+GPL-licensed TimGM6mb bank when **SoundFont file** is empty. Choose a custom
+SF2 file to override it, or select **Classic OPL** for FM synthesis. Existing
+synthesizer choices are preserved when updating. Classic OPL is used if a
+selected SoundFont cannot be loaded. Sound effects include `DSNOWAY`, Doom's
+failed-interaction sound.
 
 Cheats include `IDDQD`, `IDFA`, `IDKFA`, `IDCHOPPERS`, `IDCLIP` and
 `IDMUSnn`, plus `IDBEHOLD` followed by V (invulnerability), S (berserk),
@@ -140,6 +143,8 @@ The source archive includes its SDK snapshot, package tools and OPL emulator.
 Packaging downloads the pinned official Freedoom 0.13.0 release and verifies
 its checksum. For an offline build, put `freedoom-0.13.0.zip` in
 `build/freedoom/`; see `third_party/freedoom/README.md`.
+The bundled SoundFont is also fetched and checksum-verified during packaging;
+offline instructions are in `third_party/timgm6mb/README.md`.
 Output is written to `build/Release` and `dist/`. The versioned ZIP includes
 the native DLL, configuration, licenses and corresponding source. Building does
 not install the mod or launch the game.
@@ -156,8 +161,9 @@ synthesis. See `THIRD_PARTY_NOTICES.md` and the included licenses.
 
 Doom graphics, sounds and music are loaded from the user's local IWAD, or
 from the bundled Freedoom fallback. Freedoom's BSD license and contributor
-credits are included. SoundFont music uses the separately selected SF2 file.
-The distribution contains no retail Doom game data or SoundFonts.
+credits are included. TimGM6mb is included with its GPL v2 license, notice and
+editable SF2 in the corresponding source. Custom SoundFonts remain local to
+the player. The distribution contains no retail Doom game data.
 The secret notification cue is original audio supplied for this mod by its maintainer.
 
 ## Disclaimer

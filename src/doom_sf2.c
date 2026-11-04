@@ -7,7 +7,7 @@
 #include <string.h>
 
 #define SF2_MAX_BYTES (256u * 1024u * 1024u)
-int doom_tsf_validate_regions(const tsf *font, unsigned sample_count);
+int doom_tsf_prepare_regions(tsf *font, unsigned sample_count);
 typedef struct SfChunk { const uint8_t *data; size_t size; } SfChunk;
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)((unsigned)p[0]|((unsigned)p[1]<<8)); }
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24); }
@@ -81,7 +81,10 @@ static int sf2_valid(const uint8_t *font,size_t size,unsigned *samples_out) {
     for(i=0;i+1<n[8];i++) {
         const uint8_t *s=c[8].data+i*46;
         uint32_t begin=rd32(s+20),end=rd32(s+24),loop_begin=rd32(s+28),loop_end=rd32(s+32),rate=rd32(s+36);
-        if(begin>=end || end>=sample_count || !rate || rate>768000 || loop_begin>loop_end || loop_end>end || (loop_begin && loop_begin<begin)) return 0;
+        /* Generator offsets are applied later by TSF. Keep raw addresses in
+         * the sample buffer; constrain effective loops after expansion. */
+        if(begin>=end || end>=sample_count || !rate || rate>768000 ||
+           loop_begin>=sample_count || loop_end>=sample_count) return 0;
     }
     *samples_out=sample_count;
     return 1;
@@ -120,7 +123,7 @@ int doom_synth_render_sf2_cancelable(const uint8_t *music,size_t size,const uint
     events=(DoomMusicEvent*)malloc(count*sizeof(*events)); if(!events) return 0;
     if((midi?doom_music_parse_midi(music,size,events,count):doom_music_parse_mus(music,size,events,count))!=count||events[count-1].tick>140*600) goto fail;
     if(cancel&&cancel(context)) goto fail;
-    font=tsf_load_memory(font_data,(int)font_size); if(!font || !doom_tsf_validate_regions(font,sample_count)) goto fail;
+    font=tsf_load_memory(font_data,(int)font_size); if(!font || !doom_tsf_prepare_regions(font,sample_count)) goto fail;
     if(cancel&&cancel(context)) goto fail;
     tsf_set_output(font,TSF_STEREO_INTERLEAVED,(int)rate,-9.0f);
     if(!tsf_set_max_voices(font,256)) goto fail;

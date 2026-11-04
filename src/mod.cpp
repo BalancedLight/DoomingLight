@@ -134,7 +134,7 @@ struct PreparedEffect {
     std::string path;
 };
 struct Settings {
-    std::string game = "auto", doom, doom2, music = "doom", musicSynth = "opl", soundfont;
+    std::string game = "auto", doom, doom2, music = "doom", musicSynth = "soundfont", soundfont;
     std::string controllerFire = "right", controllerCycle = "normal";
     std::string secretSound;
     bool classic = false, cheats = true, hudFit = true, bilinear = false, dynamicLights = true;
@@ -161,7 +161,7 @@ struct Runtime {
     std::future<PreparedMusic> rendering;
     std::future<PreparedEffect> secretLoading;
     PreparedEffect secretEffect;
-    std::string secretRequested, bundledSecret, bundleDirectory;
+    std::string secretRequested, bundledSecret, bundleDirectory, bundledSoundFont;
     PreparedMusic pendingMusic;
     std::shared_ptr<std::atomic<bool>> cancelRender;
     std::array<uint8_t, 320 * 200 * 4> weaponPixels{};
@@ -284,7 +284,7 @@ struct Runtime {
         settings.doom = text("doom_wad", ""); settings.doom2 = text("doom2_wad", "");
         settings.freedoomFallback = integer("freedoom_fallback", 1, 0, 1) != 0;
         settings.music = text("music", "doom");
-        settings.musicSynth = text("music_synth", "opl");
+        settings.musicSynth = text("music_synth", "soundfont");
         settings.soundfont = text("soundfont", "");
         settings.secretSound = text("secret_sound_file", "");
         if (oldSecret!=settings.secretSound) secretEffect={};
@@ -438,7 +438,7 @@ struct Runtime {
         cancelRender = std::make_shared<std::atomic<bool>>(false);
         const auto cancel = cancelRender;
         const bool useSoundFont=settings.musicSynth=="soundfont";
-        const std::string fontPath=settings.soundfont;
+        const std::string fontPath=settings.soundfont.empty() ? bundledSoundFont : settings.soundfont;
         rendering = std::async(std::launch::async,
             [score = std::move(score), instruments = std::move(instruments), track, doom2, epoch, cancel,
              useSoundFont, fontPath]() {
@@ -1411,6 +1411,7 @@ struct Runtime {
         engine = doom_engine_create(); audio = doom_audio_create(); gamepad=doom_gamepad_create();
         bundledSecret=bundledFile(L"dssecret.wav");
         bundleDirectory=bundledFile(L"");
+        bundledSoundFont=bundledFile(L"TimGM6mb.sf2");
         if (!engine || !audio) return DLUMA_STATUS_UNAVAILABLE;
 #if defined(DOOM_MODE_RUNTIME)
         worldDisplay = doom_world_display_create();

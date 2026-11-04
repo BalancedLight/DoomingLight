@@ -35,8 +35,8 @@
       "id": "audio", "name": "Music and sound",
       "settings": [
         {"key": "music", "name": "Music", "description": "Doom music and Off stop Dying Light's music manager while the mode is active.", "type": "enum", "default": "doom", "options": [{"value": "doom", "name": "Doom music"}, {"value": "host", "name": "Dying Light music"}, {"value": "off", "name": "Off"}]},
-        {"key": "music_synth", "name": "Music synthesizer", "description": "Choose the instruments used for Doom music. Applies immediately.", "type": "enum", "default": "opl", "options": [{"value": "opl", "name": "Classic OPL"}, {"value": "soundfont", "name": "SoundFont (SF2)"}]},
-        {"key": "soundfont", "name": "SoundFont file", "description": "Path to an SF2 file for SoundFont music. Applies immediately.", "type": "text", "default": "", "maxLength": 1024},
+        {"key": "music_synth", "name": "Music synthesizer", "description": "Choose the instruments used for Doom music. SoundFont is the default. Applies immediately.", "type": "enum", "default": "soundfont", "options": [{"value": "opl", "name": "Classic OPL"}, {"value": "soundfont", "name": "SoundFont (SF2)"}]},
+        {"key": "soundfont", "name": "SoundFont file", "description": "Leave empty to use the included TimGM6mb SoundFont, or choose your own SF2 file. Applies immediately.", "type": "text", "default": "", "maxLength": 1024},
         {"key": "random_map_music", "name": "Random map music", "description": "Choose a random available Doom track on each map. Applies on the next map.", "type": "boolean", "default": false},
         {"key": "default_track", "name": "Default track", "description": "Applies on the next map. Doom II uses 1–35; Doom uses 1–10 or IDMUS numbers 11–45.", "type": "integer", "default": 1, "legacyDefault": 0, "min": 1, "max": 45, "step": 1},
         {"key": "music_volume", "name": "Music volume (%)", "description": "Volume of the Doom soundtrack.", "type": "integer", "default": 70, "min": 0, "max": 100, "step": 5},

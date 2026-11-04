@@ -13,6 +13,7 @@ from pathlib import Path
 
 from dluma_mod_package import PackageError, create_package, validate_lock, write_lock
 from freedoom_assets import prepare_freedoom
+from soundfont_assets import prepare_soundfont
 
 ROOT = Path(__file__).resolve().parents[1]
 MOD_RELATIVE = Path("mods/native/global/doom.mode")
@@ -202,6 +203,7 @@ def main() -> int:
         source = ROOT / "package" / MOD_RELATIVE
         validate_configuration(source / "config.dluma.json")
         freedoom = prepare_freedoom(ROOT / "build/freedoom")
+        soundfont = prepare_soundfont(ROOT)
         output = args.output_dir.resolve()
         if args.lab and output == (ROOT / "dist").resolve():
             raise PackageError("Lab packages require a separate output directory")
@@ -223,6 +225,9 @@ def main() -> int:
         shutil.copyfile(ROOT / "third_party/tsf/LICENSE", destination / "LICENSE.TSF.txt")
         shutil.copyfile(module, destination / "DoomMode.dll")
         shutil.copyfile(ROOT / "assets/audio/dssecret.wav", destination / "dssecret.wav")
+        shutil.copyfile(soundfont, destination / "TimGM6mb.sf2")
+        shutil.copyfile(ROOT / "third_party/timgm6mb/LICENSE.txt", destination / "LICENSE.TIMGM6MB.txt")
+        shutil.copyfile(ROOT / "third_party/timgm6mb/NOTICE.txt", destination / "NOTICE.TIMGM6MB.txt")
         for wad in freedoom:
             shutil.copyfile(wad, destination / wad.name)
         for source_name, target_name in (("COPYING.txt", "LICENSE.FREEDOOM.txt"),
@@ -246,6 +251,7 @@ def main() -> int:
                                  or item.relative_to(ROOT) == Path("assets/audio/dssecret.wav"))
                             and item.name not in {".dlw-workshop.json", ".dlw-workshopignore"}):
                         archive.write(item, item.relative_to(ROOT))
+            archive.write(soundfont, "third_party/timgm6mb/TimGM6mb.sf2")
             for name in ("LICENSE", "LICENSE.DLUMA", "THIRD_PARTY_NOTICES.md", "README.md", "build_doom_mode_msvc.bat"):
                 archive.write(ROOT / name, name)
         # Include corresponding source with every binary distribution.

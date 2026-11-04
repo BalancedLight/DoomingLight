@@ -36,10 +36,10 @@
 
 namespace {
 constexpr uint64_t UpdateCallback = 1, ConfigCallback = 2;
-std::string bundledSecretSound() {
+std::string bundledFile(const wchar_t* filename) {
     HMODULE module=nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&bundledSecretSound),&module)) return {};
+            reinterpret_cast<LPCWSTR>(&bundledFile),&module)) return {};
     std::wstring path(32768,L'\0');
     const DWORD length=GetModuleFileNameW(module,path.data(),static_cast<DWORD>(path.size()));
     if (!length || length>=path.size()) return {};
@@ -47,7 +47,7 @@ std::string bundledSecretSound() {
     if (path.compare(0,4,L"\\\\?\\")==0) path.erase(0,4);
     const auto slash=path.find_last_of(L"/\\");
     if (slash==std::wstring::npos) return {};
-    path.resize(slash+1); path+=L"dssecret.wav";
+    path.resize(slash+1); path+=filename;
     const int bytes=WideCharToMultiByte(CP_UTF8,0,path.c_str(),-1,nullptr,0,nullptr,nullptr);
     if (bytes<=1) return {};
     std::string result(static_cast<size_t>(bytes),'\0');
@@ -100,6 +100,7 @@ struct Assets {
     WadPtr otherMusicWad;
     HudPtr hud;
     std::vector<DoomMusicChoice> musicChoices;
+    bool freedoom = false;
 };
 void collectMusicChoices(Assets& assets) {
     DoomWad* wads[] = {assets.wad.get(), assets.otherMusicWad.get()};
@@ -137,7 +138,7 @@ struct Settings {
     std::string controllerFire = "right", controllerCycle = "normal";
     std::string secretSound;
     bool classic = false, cheats = true, hudFit = true, bilinear = false, dynamicLights = true;
-    bool randomMusic = false;
+    bool randomMusic = false, freedoomFallback = true;
     int track = 1, hud = 100, weaponScale = 100, incoming = 100, outgoing = 100;
     int musicVolume = 70, effectsVolume = 100;
 };
@@ -160,7 +161,7 @@ struct Runtime {
     std::future<PreparedMusic> rendering;
     std::future<PreparedEffect> secretLoading;
     PreparedEffect secretEffect;
-    std::string secretRequested, bundledSecret;
+    std::string secretRequested, bundledSecret, bundleDirectory;
     PreparedMusic pendingMusic;
     std::shared_ptr<std::atomic<bool>> cancelRender;
     std::array<uint8_t, 320 * 200 * 4> weaponPixels{};
@@ -281,6 +282,7 @@ struct Runtime {
         const bool oldCheats = settings.cheats;
         settings.game = text("game", "auto");
         settings.doom = text("doom_wad", ""); settings.doom2 = text("doom2_wad", "");
+        settings.freedoomFallback = integer("freedoom_fallback", 1, 0, 1) != 0;
         settings.music = text("music", "doom");
         settings.musicSynth = text("music_synth", "opl");
         settings.soundfont = text("soundfont", "");
@@ -842,21 +844,24 @@ struct Runtime {
         if (loading.valid()) { reloadAssets = true; return; }
         Settings selected = mapAssetSettings;
         selected.randomMusic = randomMusicForMap;
-        loading = std::async(std::launch::async, [selected]() {
+        const std::string directory = bundleDirectory;
+        loading = std::async(std::launch::async, [selected, directory]() {
             Assets result;
             char path[4097]{};
-            bool found = false;
-            if (selected.game != "doom")
-                found = doom_find_iwad(2, selected.doom2.c_str(), path, sizeof(path)) != 0;
-            if (!found && selected.game != "doom2")
-                found = doom_find_iwad(1, selected.doom.c_str(), path, sizeof(path)) != 0;
+            int fallback = 0;
+            const int game = selected.game=="doom" ? 1 : selected.game=="doom2" ? 2 :
+                selected.game=="freedoom1" ? 3 : selected.game=="freedoom2" ? 4 : 0;
+            const bool found = doom_select_iwad(game, selected.doom.c_str(), selected.doom2.c_str(),
+                selected.freedoomFallback, directory.c_str(), path, sizeof(path), &fallback) != 0;
+            result.freedoom = fallback != 0 && game<3;
             if (found) {
                 result.wad.reset(doom_wad_open(path));
                 if (result.wad) result.hud.reset(doom_hud_create(result.wad.get()));
                 if (result.wad && selected.randomMusic) {
                     const int otherGame = doom_wad_is_doom2(result.wad.get()) ? 1 : 2;
-                    const std::string& otherPath = otherGame == 1 ? selected.doom : selected.doom2;
-                    if (doom_find_iwad(otherGame, otherPath.c_str(), path, sizeof(path)))
+                    const int otherChoice = game>=3 ? otherGame+2 : otherGame;
+                    if (doom_select_iwad(otherChoice, selected.doom.c_str(), selected.doom2.c_str(),
+                            selected.freedoomFallback, directory.c_str(), path, sizeof(path), nullptr))
                         result.otherMusicWad.reset(doom_wad_open(path));
                     collectMusicChoices(result);
                 }
@@ -917,7 +922,9 @@ struct Runtime {
             Assets loaded = loading.get();
             if (reloadAssets) { reloadAssets = false; beginAssets(); return; }
             assets = std::move(loaded);
-            if (!assets.wad || !assets.hud) { log("WARN", "Dooming Light needs a valid Doom or Doom II WAD. Set its path in Mods."); return; }
+            if (!assets.wad || !assets.hud) { log("ERROR", "Dooming Light could not load a WAD. Set a valid Doom WAD path or enable Use Freedoom fallback in Mods."); return; }
+            if (assets.freedoom)
+                log("ERROR", "Dooming Light could not find your selected Doom WADs; using Freedoom as backup.");
             doom_reset(&player, doom_wad_is_doom2(assets.wad.get()));
 #if defined(DOOM_MODE_RUNTIME)
             doom_world_runtime_reset(&world, generation);
@@ -1402,7 +1409,8 @@ struct Runtime {
         (void)service(DLUMA_SERVICE_AUDIO_V1, media);
         if (service(DLUMA_SERVICE_PLAYER_V1, playerApi)) (void)doom_movement_init(&movement, &playerApi);
         engine = doom_engine_create(); audio = doom_audio_create(); gamepad=doom_gamepad_create();
-        bundledSecret=bundledSecretSound();
+        bundledSecret=bundledFile(L"dssecret.wav");
+        bundleDirectory=bundledFile(L"");
         if (!engine || !audio) return DLUMA_STATUS_UNAVAILABLE;
 #if defined(DOOM_MODE_RUNTIME)
         worldDisplay = doom_world_display_create();

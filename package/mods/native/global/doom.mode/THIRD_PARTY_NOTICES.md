@@ -20,8 +20,15 @@ See LICENSE and the notices in the source files.
 - MinHook 1.3.4: Copyright Tsuda Kageyu and contributors, BSD 2-Clause;
   see LICENSE.MINHOOK.txt and third_party/minhook.
 
-Doom graphics, sound effects, instruments and music are read from the user's
-IWAD. They are not included in this distribution.
+- Freedoom Phase 1 and Phase 2 0.13.0: Copyright 2001-2024 Contributors to
+  the Freedoom project, BSD 3-Clause. The official release WADs are included
+  as a fallback. See LICENSE.FREEDOOM.txt, CREDITS.FREEDOOM.txt and
+  CREDITS.FREEDOOM-MUSIC.txt; source and release provenance are documented
+  in third_party/freedoom/README.md.
+  https://github.com/freedoom/freedoom/releases/tag/v0.13.0
+
+Retail Doom graphics, sound effects, instruments and music are read from
+the user's IWAD. Retail game data is not included in this distribution.
 
 The included secret notification cue is original audio created and supplied
 for Dooming Light by its maintainer.

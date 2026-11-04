@@ -4,9 +4,10 @@
     {
       "id": "game", "name": "Game and WADs",
       "settings": [
-        {"key": "game", "name": "Game", "description": "Choose the Doom arsenal and soundtrack. Applies on the next map.", "type": "enum", "default": "auto", "options": [{"value": "auto", "name": "Automatic"}, {"value": "doom", "name": "Doom"}, {"value": "doom2", "name": "Doom II"}]},
+        {"key": "game", "name": "Game", "description": "Choose the arsenal and game assets. Freedoom uses the included WADs. Applies on the next map.", "type": "enum", "default": "auto", "options": [{"value": "auto", "name": "Automatic"}, {"value": "doom", "name": "Doom"}, {"value": "doom2", "name": "Doom II"}, {"value": "freedoom1", "name": "Freedoom: Phase 1"}, {"value": "freedoom2", "name": "Freedoom: Phase 2"}]},
         {"key": "doom_wad", "name": "Doom WAD", "description": "Path to DOOM.WAD. Leave empty to search your Steam libraries. Applies on the next map.", "type": "text", "default": "", "maxLength": 1024},
-        {"key": "doom2_wad", "name": "Doom II WAD", "description": "Path to DOOM2.WAD. Leave empty to search your Steam libraries. Applies on the next map.", "type": "text", "default": "", "maxLength": 1024}
+        {"key": "doom2_wad", "name": "Doom II WAD", "description": "Path to DOOM2.WAD. Leave empty to search your Steam libraries. Applies on the next map.", "type": "text", "default": "", "maxLength": 1024},
+        {"key": "freedoom_fallback", "name": "Use Freedoom fallback", "description": "Use the included Freedoom assets when the selected Doom WAD cannot be found. Applies on the next map.", "type": "boolean", "default": true}
       ]
     },
     {

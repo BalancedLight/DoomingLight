@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 from dluma_mod_package import PackageError, create_package, validate_lock, write_lock
+from freedoom_assets import prepare_freedoom
 
 ROOT = Path(__file__).resolve().parents[1]
 MOD_RELATIVE = Path("mods/native/global/doom.mode")
@@ -200,6 +201,7 @@ def main() -> int:
         report = inspect_module(module)
         source = ROOT / "package" / MOD_RELATIVE
         validate_configuration(source / "config.dluma.json")
+        freedoom = prepare_freedoom(ROOT / "build/freedoom")
         output = args.output_dir.resolve()
         if args.lab and output == (ROOT / "dist").resolve():
             raise PackageError("Lab packages require a separate output directory")
@@ -221,6 +223,12 @@ def main() -> int:
         shutil.copyfile(ROOT / "third_party/tsf/LICENSE", destination / "LICENSE.TSF.txt")
         shutil.copyfile(module, destination / "DoomMode.dll")
         shutil.copyfile(ROOT / "assets/audio/dssecret.wav", destination / "dssecret.wav")
+        for wad in freedoom:
+            shutil.copyfile(wad, destination / wad.name)
+        for source_name, target_name in (("COPYING.txt", "LICENSE.FREEDOOM.txt"),
+                                          ("CREDITS.txt", "CREDITS.FREEDOOM.txt"),
+                                          ("CREDITS-MUSIC.txt", "CREDITS.FREEDOOM-MUSIC.txt")):
+            shutil.copyfile(ROOT / "third_party/freedoom" / source_name, destination / target_name)
         manifest = json.loads((destination / "mod.dluma.json").read_text(encoding="utf-8"))
         if args.lab:
             manifest.update(id="doom.mode.lab", version="0.1.0-lab")

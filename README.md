@@ -16,7 +16,7 @@ objectives, and interactions.
 
 ## Beta compatibility
 
-Version 0.1.0-beta.1 supports single-player Player maps on the following x64
+Version 0.1.0-beta.2 supports single-player Player maps on the following x64
 Player build:
 
 | Module | SHA-256 |
@@ -36,15 +36,26 @@ normal parkour controls, including jumping, climbing and free look.
 
 ## Requirements and installation
 
-Install DLUMA and an original Doom, Ultimate Doom, or Doom II IWAD from your
-own installation. Only the selected game's IWAD is required. Doom II is chosen
-automatically when both games are found in Steam libraries; Mods configuration
-also accepts explicit WAD paths. Game and WAD changes apply on the next map.
+Install DLUMA. Dooming Light first searches for an original Doom, Ultimate
+Doom, or Doom II IWAD from your own installation. Doom II is preferred in
+Automatic mode; Mods configuration also accepts explicit WAD paths.
+**Use Freedoom fallback**, below the WAD paths in **Game and WADs**, is enabled
+by default. When the selected retail WAD is unavailable, the mod uses the
+included Freedoom Phase 1 or Phase 2 assets and records an error in DLUMA's
+log explaining the fallback. Automatic mode tries both retail games before
+Freedoom Phase 2. Disable the toggle to require your own WAD. Game, WAD and
+fallback changes apply on the next map.
+
+The **Game** selector also offers **Freedoom: Phase 1** and **Freedoom:
+Phase 2** directly. These choices always use the included WAD, even when
+retail Doom is installed or automatic fallback is disabled. Phase 1 uses
+the Doom arsenal; Phase 2 includes the super shotgun. With random map music
+enabled, these choices draw music from both Freedoom phases.
 
 1. Extract the package into `mods/native/global/doom.mode` in your DLUMA
    installation.
-2. Enable Dooming Light and configure the WAD path in Mods if discovery did
-   not find it.
+2. Enable Dooming Light in Mods. Set your WAD path if needed, or leave
+   **Use Freedoom fallback** enabled to use the included assets.
 3. Restart Player to load the native mod.
 
 Disabling a native mod also requires restarting Player. To uninstall, disable
@@ -126,6 +137,9 @@ build_doom_mode_msvc.bat Release
 ```
 
 The source archive includes its SDK snapshot, package tools and OPL emulator.
+Packaging downloads the pinned official Freedoom 0.13.0 release and verifies
+its checksum. For an offline build, put `freedoom-0.13.0.zip` in
+`build/freedoom/`; see `third_party/freedoom/README.md`.
 Output is written to `build/Release` and `dist/`. The versioned ZIP includes
 the native DLL, configuration, licenses and corresponding source. Building does
 not install the mod or launch the game.
@@ -140,9 +154,10 @@ The C core adapts Doom's gameplay values and rules. Music decoding and
 instrument handling use the Doom and Chocolate Doom formats with Nuked OPL3
 synthesis. See `THIRD_PARTY_NOTICES.md` and the included licenses.
 
-Doom graphics, sounds and music are loaded from the user's local IWAD.
-SoundFont music uses the separately selected SF2 file. The distribution
-contains no Doom game data or SoundFonts.
+Doom graphics, sounds and music are loaded from the user's local IWAD, or
+from the bundled Freedoom fallback. Freedoom's BSD license and contributor
+credits are included. SoundFont music uses the separately selected SF2 file.
+The distribution contains no retail Doom game data or SoundFonts.
 The secret notification cue is original audio supplied for this mod by its maintainer.
 
 ## Disclaimer

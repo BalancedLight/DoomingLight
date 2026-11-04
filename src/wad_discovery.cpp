@@ -91,3 +91,27 @@ extern "C" int doom_find_iwad(int game,const char *manual_path,char *out,size_t 
     }
     return 0;
 }
+extern "C" int doom_select_iwad(int game,const char *doom_path,const char *doom2_path,
+        int allow_freedoom,const char *bundle_directory,char *out,size_t capacity,int *used_freedoom) {
+    if (used_freedoom) *used_freedoom=0;
+    if (!out || !capacity) return 0;
+    out[0]='\0';
+    if (game<0 || game>4) return 0;
+    const bool explicit_freedoom=game>=3;
+    if (!explicit_freedoom) {
+        if (game!=1 && doom_find_iwad(2,doom2_path,out,capacity)) return 1;
+        if (game!=2 && doom_find_iwad(1,doom_path,out,capacity)) return 1;
+    }
+    if ((!explicit_freedoom && !allow_freedoom) || !bundle_directory || !*bundle_directory) return 0;
+    const int phase=explicit_freedoom ? game-2 : game;
+    for (int candidate=2;candidate>=1;--candidate) {
+        if (phase && phase!=candidate) continue;
+        const auto file=fs::u8path(bundle_directory)/(candidate==2?L"freedoom2.wad":L"freedoom1.wad");
+        const auto path=utf8(file.wstring());
+        if (valid(path,candidate) && store(path,out,capacity)) {
+            if (used_freedoom) *used_freedoom=1;
+            return 1;
+        }
+    }
+    return 0;
+}
